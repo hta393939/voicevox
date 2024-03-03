@@ -37,6 +37,8 @@
   },
   "dependencies": {
     "@gtm-support/vue-gtm": "1.2.3",
+    "@pixiv/three-vrm": "2.1.0",
+    "@pixiv/three-vrm-animation": "2.1.0",
     "@quasar/extras": "1.10.10",
     "@tonejs/midi": "2.0.28",
     "async-lock": "1.4.0",

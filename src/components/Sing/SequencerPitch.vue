@@ -4,7 +4,9 @@
 
 <script setup lang="ts">
 import { ref, watch, toRaw, computed, onUnmounted, onMounted } from "vue";
-import * as PIXI from "pixi.js";
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
+import { VRMLoaderPlugin } from "@pixiv/three-vrm";
 import { useStore } from "@/store";
 import { frequencyToNoteNumber, secondToTick } from "@/sing/domain";
 import { noteNumberToBaseY, tickToBaseX } from "@/sing/viewHelper";
@@ -20,11 +22,7 @@ type PitchLine = {
   readonly startFrame: number;
   readonly frameLength: number;
   readonly frameTicksArray: number[];
-  readonly lineStrip: LineStrip;
 };
-
-const pitchLineColor = [0.647, 0.831, 0.678, 1]; // RGBA
-const pitchLineWidth = 1.5;
 
 const props =
   defineProps<{ isActivated: boolean; offsetX: number; offsetY: number }>();
@@ -40,8 +38,11 @@ let resizeObserver: ResizeObserver | undefined;
 let canvasWidth: number | undefined;
 let canvasHeight: number | undefined;
 
-let renderer: PIXI.Renderer | undefined;
-let stage: PIXI.Container | undefined;
+let renderer: THREE.WebGLRenderer | undefined;
+let scene: THREE.Scene | undefined;
+let camera: THREE.OrthographicCamera | THREE.PerspectiveCamera | undefined;
+let clock: THREE.Clock | undefined;
+let currentVrm: any | undefined;
 let requestId: number | undefined;
 let renderInNextFrame = false;
 
@@ -82,8 +83,11 @@ const render = () => {
   if (!renderer) {
     throw new Error("renderer is undefined.");
   }
-  if (!stage) {
-    throw new Error("stage is undefined.");
+  if (!scene) {
+    throw new Error("scene is undefined.");
+  }
+  if (!camera) {
+    throw new Error("camera is undefined.");
   }
 
   const phrases = toRaw(store.state.phrases);
@@ -92,101 +96,41 @@ const render = () => {
   const offsetX = props.offsetX;
   const offsetY = props.offsetY;
 
-  // 無くなったフレーズを調べて、そのフレーズに対応するピッチラインを削除する
-  for (const [phraseKey, pitchLines] of pitchLinesMap) {
-    if (!phrases.has(phraseKey)) {
-      for (const pitchLine of pitchLines) {
-        stage.removeChild(pitchLine.lineStrip.displayObject);
-        pitchLine.lineStrip.destroy();
-      }
-      pitchLinesMap.delete(phraseKey);
-    }
-  }
-  // ピッチラインの生成・更新を行う
-  for (const [phraseKey, phrase] of phrases) {
-    if (!phrase.singer || !phrase.query || !phrase.startTime) {
-      continue;
-    }
-    const tempos = [toRaw(phrase.tempos[0])];
-    const tpqn = phrase.tpqn;
-    const startTime = phrase.startTime;
-    const f0 = phrase.query.f0;
-    const phonemes = phrase.query.phonemes;
-    const engineId = phrase.singer.engineId;
-    const frameRate = store.state.engineManifests[engineId].frameRate;
-    let pitchLines = pitchLinesMap.get(phraseKey);
+  if (clock) {
+    const deltaTime = clock.getDelta();
 
-    // フレーズに対応するピッチラインが無かったら生成する
-    if (!pitchLines) {
-      // 有声区間を調べる
-      const voicedSections = searchVoicedSections(phonemes);
-      // 有声区間のピッチラインを生成
-      pitchLines = [];
-      for (const voicedSection of voicedSections) {
-        const startFrame = voicedSection.startFrame;
-        const frameLength = voicedSection.frameLength;
-        // 各フレームのticksは前もって計算しておく
-        const frameTicksArray: number[] = [];
-        for (let j = 0; j < frameLength; j++) {
-          const ticks = secondToTick(
-            startTime + (startFrame + j) / frameRate,
-            tempos,
-            tpqn
-          );
-          frameTicksArray.push(ticks);
-        }
-        const lineStrip = new LineStrip(
-          frameLength,
-          pitchLineColor,
-          pitchLineWidth
+    const ang =
+      ((((Date.now() + offsetX + offsetY + zoomX + zoomY) % 2000) as number) /
+        2000.0) *
+      Math.PI *
+      2;
+    currentVrm?.expressionManager?.setValue("aa", Math.cos(ang));
+    currentVrm?.expressionManager?.setValue("blink", 1);
+
+    {
+      const bone = currentVrm?.humanoid?.getNormalizedBone("leftUpperArm");
+      if (bone) {
+        //console.log("bone", bone);
+        bone.node?.rotation?.set(
+          -Math.PI * 0.25,
+          -Math.PI * 0.25,
+          -Math.PI * 0.25
         );
-        pitchLines.push({
-          startFrame,
-          frameLength,
-          frameTicksArray,
-          lineStrip,
-        });
       }
-      // lineStripをステージに追加
-      for (const pitchLine of pitchLines) {
-        stage.addChild(pitchLine.lineStrip.displayObject);
+    }
+    {
+      const bone = currentVrm?.humanoid?.getNormalizedBone("rightUpperArm");
+      if (bone) {
+        bone.node?.rotation?.set(0, Math.PI * 0.25, Math.PI * 0.25);
       }
-      pitchLinesMap.set(phraseKey, pitchLines);
     }
 
-    // ピッチラインを更新
-    for (let i = 0; i < pitchLines.length; i++) {
-      const pitchLine = pitchLines[i];
-
-      // カリングを行う
-      const startTicks = pitchLine.frameTicksArray[0];
-      const startBaseX = tickToBaseX(startTicks, tpqn);
-      const startX = startBaseX * zoomX - offsetX;
-      const lastIndex = pitchLine.frameLength - 1;
-      const endTicks = pitchLine.frameTicksArray[lastIndex];
-      const endBaseX = tickToBaseX(endTicks, tpqn);
-      const endX = endBaseX * zoomX - offsetX;
-      if (startX >= canvasWidth || endX <= 0) {
-        pitchLine.lineStrip.renderable = false;
-        continue;
-      }
-      pitchLine.lineStrip.renderable = true;
-
-      // ポイントを計算してlineStripに設定＆更新
-      for (let j = 0; j < pitchLine.frameLength; j++) {
-        const ticks = pitchLine.frameTicksArray[j];
-        const baseX = tickToBaseX(ticks, tpqn);
-        const x = baseX * zoomX - offsetX;
-        const freq = f0[pitchLine.startFrame + j];
-        const noteNumber = frequencyToNoteNumber(freq);
-        const baseY = noteNumberToBaseY(noteNumber);
-        const y = baseY * zoomY - offsetY;
-        pitchLine.lineStrip.setPoint(j, x, y);
-      }
-      pitchLine.lineStrip.update();
+    if (currentVrm) {
+      currentVrm.update(deltaTime);
     }
   }
-  renderer.render(stage);
+
+  renderer.render(scene, camera);
 };
 
 watch(queries, () => {
@@ -220,18 +164,35 @@ const initialize = () => {
   canvasElement.width = canvasWidth;
   canvasElement.height = canvasHeight;
   canvasContainerElement.appendChild(canvasElement);
-
-  renderer = new PIXI.Renderer({
-    view: canvasElement,
-    backgroundAlpha: 0,
+  renderer = new THREE.WebGLRenderer({
+    canvas: canvasElement,
     antialias: true,
   });
-  stage = new PIXI.Container();
+  renderer.setClearColor(0x000000, 0.0);
+  scene = new THREE.Scene();
+
+  clock = new THREE.Clock();
+  clock.start();
+
+  function setCamera(width: number, height: number) {
+    camera = new THREE.PerspectiveCamera(45, width / height, 0.02, 100);
+    camera.position.set(0, 0.6, 2);
+    camera.lookAt(new THREE.Vector3(0, 0.6, 0));
+    renderer?.setViewport(width / 2, 0, width / 2, height / 2); // height は下から
+  }
+
+  setCamera(4, 3);
+
+  {
+    const light = new THREE.DirectionalLight(0xffffff, Math.PI);
+    light.position.set(1, 1, 1);
+    scene?.add(light);
+  }
 
   const callback = () => {
     if (renderInNextFrame) {
       render();
-      renderInNextFrame = false;
+      //renderInNextFrame = false;
     }
     requestId = window.requestAnimationFrame(callback);
   };
@@ -248,11 +209,39 @@ const initialize = () => {
     if (canvasContainerWidth > 0 && canvasContainerHeight > 0) {
       canvasWidth = canvasContainerWidth;
       canvasHeight = canvasContainerHeight;
-      renderer.resize(canvasWidth, canvasHeight);
+      renderer.setSize(canvasWidth, canvasHeight);
       renderInNextFrame = true;
+      setCamera(canvasWidth, canvasHeight);
     }
   });
   resizeObserver.observe(canvasContainerElement);
+
+  {
+    const loader = new GLTFLoader();
+    loader.register((parser) => {
+      return new VRMLoaderPlugin(parser);
+    });
+    loader.load(
+      "./res/model/Zundamon(Human)_VRM_10.vrm",
+      (gltf) => {
+        const vrm = gltf.userData.vrm;
+        scene?.add(vrm.scene);
+        console.log("vrm success", vrm);
+        currentVrm = vrm;
+
+        console.log(
+          "vrm expression",
+          vrm?.expressionManager?.mouthExpressionNames
+        );
+      },
+      (progress: ProgressEvent) => {
+        console.log("vrm progress", (100 * progress.loaded) / progress.total);
+      },
+      (error) => {
+        console.error("vrm loader", error);
+      }
+    );
+  }
 
   isInstantiated = true;
 };
@@ -261,14 +250,9 @@ const cleanUp = () => {
   if (requestId != undefined) {
     window.cancelAnimationFrame(requestId);
   }
-  stage?.destroy();
-  pitchLinesMap.forEach((pitchLines) => {
-    pitchLines.forEach((pitchLine) => {
-      pitchLine.lineStrip.destroy();
-    });
-  });
+  scene?.clear();
   pitchLinesMap.clear();
-  renderer?.destroy(true);
+  renderer?.dispose();
   resizeObserver?.disconnect();
 
   isInstantiated = false;
