@@ -10,7 +10,6 @@ import { VRMLoaderPlugin } from "@pixiv/three-vrm";
 import { useStore } from "@/store";
 import { frequencyToNoteNumber, secondToTick } from "@/sing/domain";
 import { noteNumberToBaseY, tickToBaseX } from "@/sing/viewHelper";
-import type { Tempo } from "@/store/type";
 import { FramePhoneme } from "@/openapi";
 
 type VoicedSection = {
@@ -25,7 +24,12 @@ type PitchLine = {
 };
 
 const props =
-  defineProps<{ isActivated: boolean; offsetX: number; offsetY: number }>();
+  defineProps<{
+    isActivated: boolean;
+    playheadTicks: number;
+    offsetX: number;
+    offsetY: number;
+  }>();
 
 const store = useStore();
 const queries = computed(() => {
@@ -45,7 +49,8 @@ let clock: THREE.Clock | undefined;
 let currentVrm: any | undefined;
 let requestId: number | undefined;
 let renderInNextFrame = false;
-let lastBPM = 120;
+let lastBpm = 120;
+let lastTpqn = 480;
 
 /**
  * このコンポーネントの変数
@@ -78,15 +83,14 @@ const searchVoicedSections = (phonemes: FramePhoneme[]) => {
 };
 
 const makeWeight = (target: string) => {
-  const weights: {[key: string]: number} = {
-    'aa': 0,
-    'ih': 0,
-    'ou': 0,
-    'ee': 0,
-    "oh": 0,
-  };
-  if (target in weights) {
-    weights[target] = 1;
+  const weights = new Map<string, number>();
+  weights.set("aa", 0);
+  weights.set("ih", 0);
+  weights.set("ou", 0);
+  weights.set("ee", 0);
+  weights.set("oh", 0);
+  if (weights.has(target)) {
+    weights.set(target, 1);
   }
   return weights;
 };
@@ -109,10 +113,11 @@ const render = () => {
   }
 /**
  * store.state.phrases からアクセスできるようになるもの
- */
+   */
   const phrases = toRaw(store.state.phrases);
   const zoomX = store.state.sequencerZoomX;
   const zoomY = store.state.sequencerZoomY;
+  const playheadTicks = props.playheadTicks;
   const offsetX = props.offsetX;
   const offsetY = props.offsetY;
 
@@ -128,8 +133,9 @@ const render = () => {
       continue;
     }
     const tempos = [toRaw(phrase.tempos[0])];
-    lastBPM = tempos[0].bpm;
+    lastBpm = tempos[0].bpm;
     const tpqn = phrase.tpqn;
+    lastTpqn = tpqn;
     const startTime = phrase.startTime;
     const f0 = phrase.query.f0;
     const phonemes = phrase.query.phonemes;
@@ -166,7 +172,7 @@ const render = () => {
       pitchLinesMap.set(phraseKey, pitchLines);
     }
 
-/*    // ピッチラインを更新
+    /* // ピッチラインを更新
     for (let i = 0; i < pitchLines.length; i++) {
       const pitchLine = pitchLines[i];
 
@@ -207,41 +213,31 @@ const render = () => {
         2000.0) *
       Math.PI *
       2;
-    const topology = ((Date.now() / 1000.0) * Math.PI * 2.0 * lastBPM / 4.0) / 60.0;
+    const topology = ((Date.now() / 1000.0) * Math.PI * 2.0 * lastBpm / 4.0) / 60.0;
 
     currentVrm?.expressionManager?.setValue("blink", (Math.cos(ang) + 1) * 0.5);
     const weights = makeWeight("ou");
-    for (const key in weights) {
-      currentVrm?.expressionManager?.setValue(key, weights[key]);
+    for (const [key, value] of weights) {
+      currentVrm?.expressionManager?.setValue(key, value);
     }
 
-    {
-      const bone = currentVrm?.humanoid?.getNormalizedBone("leftUpperArm");
-      if (bone) {
-        //console.log("bone", bone);
-        bone.node?.rotation?.set(
-          0,
-          0,
-          -Math.PI * 0.25
-        );
+    const pose = new Map<string, [number, number, number]>();
+    //pose.set("leftLowerArm", [0, Math.PI * 1.25, 0]);
+    pose.set("leftUpperArm", [0, 0, -Math.PI * 0.25]);
+    if (Number.isFinite(playheadTicks)) {
+      // 実時間ではなく小節数スケールで進む
+      pose.set("rightLowerArm", [0, 0, (playheadTicks / lastTpqn) * 2 * Math.PI * 0.25]);
+    }
+    pose.set("chest", [0, 0, Math.PI * 0.005 * Math.sin(topology)]);
+    pose.set("head", [0, 0, Math.PI * 0.02 * Math.sin(topology)]);
+    for (const [key, value] of pose) {
+      const bone = currentVrm?.humanoid?.getNormalizedBone(key);
+      if (!bone) {
+        continue;
       }
+      bone.node?.rotation?.set(...value);
     }
-    {
-      const bone = currentVrm?.humanoid?.getNormalizedBone("rightUpperArm");
-      if (bone) {
-        bone.node?.rotation?.set(0, Math.PI * 0.25, Math.PI * 0.25);
-      }
-    }
-    {
-      const bone = currentVrm?.humanoid?.getNormalizedBone("chest");
-      if (bone) {
-        bone.node?.rotation?.set(0, 0, Math.PI * 0.02 * Math.sin(topology));
-      }
-    }
-
-    if (currentVrm) {
-      currentVrm.update(deltaTime);
-    }
+    currentVrm?.update(deltaTime);
   }
 
   renderer.render(scene, camera);
@@ -255,6 +251,7 @@ watch(
   () => [
     store.state.sequencerZoomX,
     store.state.sequencerZoomY,
+    props.playheadTicks,
     props.offsetX,
     props.offsetY,
   ],

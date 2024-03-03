@@ -137,6 +137,7 @@
         marginBottom: `${scrollBarWidth}px`,
       }"
       :is-activated="isActivated"
+      :playhead-ticks="playheadTicks"
       :offset-x="scrollX"
       :offset-y="scrollY"
     />
