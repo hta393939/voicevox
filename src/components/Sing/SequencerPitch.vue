@@ -10,7 +10,7 @@ import { VRMLoaderPlugin } from "@pixiv/three-vrm";
 import { useStore } from "@/store";
 import { frequencyToNoteNumber, secondToTick } from "@/sing/domain";
 import { noteNumberToBaseY, tickToBaseX } from "@/sing/viewHelper";
-import { LineStrip } from "@/sing/graphics/lineStrip";
+import type { Tempo } from "@/store/type";
 import { FramePhoneme } from "@/openapi";
 
 type VoicedSection = {
@@ -45,7 +45,11 @@ let clock: THREE.Clock | undefined;
 let currentVrm: any | undefined;
 let requestId: number | undefined;
 let renderInNextFrame = false;
+let lastBPM = 120;
 
+/**
+ * このコンポーネントの変数
+ */
 const pitchLinesMap = new Map<string, PitchLine[]>();
 
 const searchVoicedSections = (phonemes: FramePhoneme[]) => {
@@ -73,6 +77,20 @@ const searchVoicedSections = (phonemes: FramePhoneme[]) => {
   return voicedSections;
 };
 
+const makeWeight = (target: string) => {
+  const weights: {[key: string]: number} = {
+    'aa': 0,
+    'ih': 0,
+    'ou': 0,
+    'ee': 0,
+    "oh": 0,
+  };
+  if (target in weights) {
+    weights[target] = 1;
+  }
+  return weights;
+};
+
 const render = () => {
   if (!canvasWidth) {
     throw new Error("canvasWidth is undefined.");
@@ -89,12 +107,97 @@ const render = () => {
   if (!camera) {
     throw new Error("camera is undefined.");
   }
-
+/**
+ * store.state.phrases からアクセスできるようになるもの
+ */
   const phrases = toRaw(store.state.phrases);
   const zoomX = store.state.sequencerZoomX;
   const zoomY = store.state.sequencerZoomY;
   const offsetX = props.offsetX;
   const offsetY = props.offsetY;
+
+  // 無くなったフレーズを調べて、そのフレーズに対応するピッチラインを削除する
+  for (const [phraseKey, pitchLines] of pitchLinesMap) {
+    if (!phrases.has(phraseKey)) {
+      pitchLinesMap.delete(phraseKey);
+    }
+  }
+  // ピッチラインの生成・更新を行う export type Phrase は type.ts にある
+  for (const [phraseKey, phrase] of phrases) {
+    if (!phrase.singer || !phrase.query || !phrase.startTime) {
+      continue;
+    }
+    const tempos = [toRaw(phrase.tempos[0])];
+    lastBPM = tempos[0].bpm;
+    const tpqn = phrase.tpqn;
+    const startTime = phrase.startTime;
+    const f0 = phrase.query.f0;
+    const phonemes = phrase.query.phonemes;
+    const engineId = phrase.singer.engineId;
+    const frameRate = store.state.engineManifests[engineId].frameRate;
+    let pitchLines = pitchLinesMap.get(phraseKey);
+
+    // フレーズに対応するピッチラインが無かったら生成する
+    if (!pitchLines) {
+      // 有声区間を調べる
+      const voicedSections = searchVoicedSections(phonemes);
+      // 有声区間のピッチラインを生成
+      pitchLines = [];
+      for (const voicedSection of voicedSections) {
+        const startFrame = voicedSection.startFrame;
+        const frameLength = voicedSection.frameLength;
+        // 各フレームのticksは前もって計算しておく [s0 1 2 3]
+        const frameTicksArray: number[] = [];
+        for (let j = 0; j < frameLength; j++) {
+          const ticks = secondToTick(
+            startTime + (startFrame + j) / frameRate,
+            tempos,
+            tpqn
+          );
+          frameTicksArray.push(ticks);
+        }
+        pitchLines.push({
+          startFrame,
+          frameLength,
+          frameTicksArray,
+        });
+      }
+      // lineStripをステージに追加
+      pitchLinesMap.set(phraseKey, pitchLines);
+    }
+
+/*    // ピッチラインを更新
+    for (let i = 0; i < pitchLines.length; i++) {
+      const pitchLine = pitchLines[i];
+
+      // カリングを行う
+      const startTicks = pitchLine.frameTicksArray[0];
+      const startBaseX = tickToBaseX(startTicks, tpqn);
+      const startX = startBaseX * zoomX - offsetX;
+      const lastIndex = pitchLine.frameLength - 1;
+      const endTicks = pitchLine.frameTicksArray[lastIndex];
+      const endBaseX = tickToBaseX(endTicks, tpqn);
+      const endX = endBaseX * zoomX - offsetX;
+      if (startX >= canvasWidth || endX <= 0) {
+        pitchLine.lineStrip.renderable = false;
+        continue;
+      }
+      pitchLine.lineStrip.renderable = true;
+
+      // ポイントを計算してlineStripに設定＆更新
+      for (let j = 0; j < pitchLine.frameLength; j++) {
+        const ticks = pitchLine.frameTicksArray[j];
+        const baseX = tickToBaseX(ticks, tpqn);
+        const x = baseX * zoomX - offsetX;
+        const freq = f0[pitchLine.startFrame + j];
+        const noteNumber = frequencyToNoteNumber(freq);
+        const baseY = noteNumberToBaseY(noteNumber);
+        const y = baseY * zoomY - offsetY;
+        pitchLine.lineStrip.setPoint(j, x, y);
+      }
+      pitchLine.lineStrip.update();
+    }*/
+  }
 
   if (clock) {
     const deltaTime = clock.getDelta();
@@ -104,16 +207,21 @@ const render = () => {
         2000.0) *
       Math.PI *
       2;
-    currentVrm?.expressionManager?.setValue("aa", Math.cos(ang));
-    currentVrm?.expressionManager?.setValue("blink", 1);
+    const topology = ((Date.now() / 1000.0) * Math.PI * 2.0 * lastBPM / 4.0) / 60.0;
+
+    currentVrm?.expressionManager?.setValue("blink", (Math.cos(ang) + 1) * 0.5);
+    const weights = makeWeight("ou");
+    for (const key in weights) {
+      currentVrm?.expressionManager?.setValue(key, weights[key]);
+    }
 
     {
       const bone = currentVrm?.humanoid?.getNormalizedBone("leftUpperArm");
       if (bone) {
         //console.log("bone", bone);
         bone.node?.rotation?.set(
-          -Math.PI * 0.25,
-          -Math.PI * 0.25,
+          0,
+          0,
           -Math.PI * 0.25
         );
       }
@@ -122,6 +230,12 @@ const render = () => {
       const bone = currentVrm?.humanoid?.getNormalizedBone("rightUpperArm");
       if (bone) {
         bone.node?.rotation?.set(0, Math.PI * 0.25, Math.PI * 0.25);
+      }
+    }
+    {
+      const bone = currentVrm?.humanoid?.getNormalizedBone("chest");
+      if (bone) {
+        bone.node?.rotation?.set(0, 0, Math.PI * 0.02 * Math.sin(topology));
       }
     }
 
@@ -176,9 +290,12 @@ const initialize = () => {
 
   function setCamera(width: number, height: number) {
     camera = new THREE.PerspectiveCamera(45, width / height, 0.02, 100);
-    camera.position.set(0, 0.6, 2);
-    camera.lookAt(new THREE.Vector3(0, 0.6, 0));
-    renderer?.setViewport(width / 2, 0, width / 2, height / 2); // height は下から
+    const lookHeight = 1.15;
+    camera.position.set(0, lookHeight, 0.5);
+    camera.lookAt(new THREE.Vector3(0, lookHeight, 0));
+    const portWidth = width * 0.6;
+    const portHeight = height * 0.6;
+    renderer?.setViewport(width - portWidth, 0, portWidth, portHeight); // height は下から
   }
 
   setCamera(4, 3);
