@@ -129,6 +129,18 @@
         @lyric-mouse-down="onNoteLyricMouseDown($event, note)"
       />
     </div>
+    <character-model
+      v-if="showPitch"
+      class="sequencer-pitch"
+      :style="{
+        marginRight: `${scrollBarWidth}px`,
+        marginBottom: `${scrollBarWidth}px`,
+      }"
+      :is-activated="isActivated"
+      :playhead-ticks="playheadTicks"
+      :offset-x="scrollX"
+      :offset-y="scrollY"
+    />
     <sequencer-pitch
       v-if="showPitch"
       class="sequencer-pitch"
@@ -238,6 +250,7 @@ import SequencerKeys from "@/components/Sing/SequencerKeys.vue";
 import SequencerNote from "@/components/Sing/SequencerNote.vue";
 import SequencerPhraseIndicator from "@/components/Sing/SequencerPhraseIndicator.vue";
 import CharacterPortrait from "@/components/Sing/CharacterPortrait.vue";
+import CharacterModel from "@/components/Sing/CharacterModel.vue";
 import SequencerPitch from "@/components/Sing/SequencerPitch.vue";
 import { isOnCommandOrCtrlKeyDown } from "@/store/utility";
 

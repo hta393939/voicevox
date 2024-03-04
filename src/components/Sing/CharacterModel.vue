@@ -224,12 +224,14 @@ const render = () => {
     const pose = new Map<string, [number, number, number]>();
     //pose.set("leftLowerArm", [0, Math.PI * 1.25, 0]);
     pose.set("leftUpperArm", [0, 0, -Math.PI * 0.25]);
+    let mod = 0;
     if (Number.isFinite(playheadTicks)) {
       // 実時間ではなく小節数スケールで進む
       pose.set("rightLowerArm", [0, 0, (playheadTicks / lastTpqn) * 2 * Math.PI * 0.25]);
+      mod = (playheadTicks % (lastTpqn * 4)) / (lastTpqn * 4);
     }
-    pose.set("chest", [0, 0, Math.PI * 0.005 * Math.sin(topology)]);
-    pose.set("head", [0, 0, Math.PI * 0.02 * Math.sin(topology)]);
+    pose.set("chest", [0, 0, Math.PI * 0.005 * ease(mod)]);
+    pose.set("head", [0, 0, Math.PI * 0.02 * ease(mod)]);
     for (const [key, value] of pose) {
       const bone = currentVrm?.humanoid?.getNormalizedBone(key);
       if (!bone) {
@@ -262,6 +264,33 @@ watch(
 
 let isInstantiated = false;
 
+const linear = (_this: any, t: number) => {
+  return (_this.y1 - _this.y0) * (t - _this.x0) / (_this.x1 - _this.x0) + _this.y0;
+};
+
+const first = 0.125;
+const second = 0.125;
+
+const sections = [
+  { x0: 0, x1: first, y0: -1, y1: -1, f: (t: number) => -1 },
+  { x0: first, x1: 0.25, y0: -1, y1: 0, f: linear },
+  { x0: 0.25, x1: 0.25 + second, y0: 0, y1: 0, f: (t: number) => 0 },
+  { x0: 0.25 + second, x1: 0.5, y0: 0, y1: 1, f: linear },
+  { x0: 0.5, x1: 0.5 + first, y0: 1, y1: 1, f: (t: number) => 1 },
+  { x0: 0.5 + first, x1: 0.75, y0: 1, y1: 0, f: linear },
+  { x0: 0.75, x1: 0.75 + second, y0: 0, y1: 0, f: (t: number) => 0 },
+  { x0: 0.75 + second, x1: 1, y0: 0, y1: -1, f: linear },
+];
+
+function ease(t: number) {
+  for (const section of sections) {
+    if (section.x0 <= t && t < section.x1) {
+      return section.f(section, t);
+    }
+  }
+  return 1;
+};
+
 const initialize = () => {
   const canvasContainerElement = canvasContainer.value;
   if (!canvasContainerElement) {
@@ -279,7 +308,7 @@ const initialize = () => {
     canvas: canvasElement,
     antialias: true,
   });
-  renderer.setClearColor(0x000000, 0.0);
+  renderer.setClearColor(0x000000, 0.5);
   scene = new THREE.Scene();
 
   clock = new THREE.Clock();
@@ -329,7 +358,7 @@ const initialize = () => {
     }
   });
   resizeObserver.observe(canvasContainerElement);
-/*
+
   {
     const loader = new GLTFLoader();
     loader.register((parser) => {
@@ -356,7 +385,7 @@ const initialize = () => {
       }
     );
   }
-*/
+
   isInstantiated = true;
 };
 
