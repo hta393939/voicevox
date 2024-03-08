@@ -139,7 +139,6 @@
       :is-activated="isActivated"
       :playhead-ticks="playheadTicks"
       :offset-x="scrollX"
-      :offset-y="scrollY"
     />
     <sequencer-pitch
       v-if="showPitch"

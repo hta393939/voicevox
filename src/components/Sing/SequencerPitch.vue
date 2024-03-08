@@ -4,12 +4,11 @@
 
 <script setup lang="ts">
 import { ref, watch, toRaw, computed, onUnmounted, onMounted } from "vue";
-import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
-import { VRMLoaderPlugin } from "@pixiv/three-vrm";
+import * as PIXI from "pixi.js";
 import { useStore } from "@/store";
 import { frequencyToNoteNumber, secondToTick } from "@/sing/domain";
 import { noteNumberToBaseY, tickToBaseX } from "@/sing/viewHelper";
+import { LineStrip } from "@/sing/graphics/lineStrip";
 import { FramePhoneme } from "@/openapi";
 
 type VoicedSection = {
@@ -21,15 +20,14 @@ type PitchLine = {
   readonly startFrame: number;
   readonly frameLength: number;
   readonly frameTicksArray: number[];
+  readonly lineStrip: LineStrip;
 };
 
+const pitchLineColor = [0.647, 0.831, 0.678, 1]; // RGBA
+const pitchLineWidth = 1.5;
+
 const props =
-  defineProps<{
-    isActivated: boolean;
-    playheadTicks: number;
-    offsetX: number;
-    offsetY: number;
-  }>();
+  defineProps<{ isActivated: boolean; offsetX: number; offsetY: number }>();
 
 const store = useStore();
 const queries = computed(() => {
@@ -42,19 +40,11 @@ let resizeObserver: ResizeObserver | undefined;
 let canvasWidth: number | undefined;
 let canvasHeight: number | undefined;
 
-let renderer: THREE.WebGLRenderer | undefined;
-let scene: THREE.Scene | undefined;
-let camera: THREE.OrthographicCamera | THREE.PerspectiveCamera | undefined;
-let clock: THREE.Clock | undefined;
-let currentVrm: any | undefined;
+let renderer: PIXI.Renderer | undefined;
+let stage: PIXI.Container | undefined;
 let requestId: number | undefined;
 let renderInNextFrame = false;
-let lastBpm = 120;
-let lastTpqn = 480;
 
-/**
- * このコンポーネントの変数
- */
 const pitchLinesMap = new Map<string, PitchLine[]>();
 
 const searchVoicedSections = (phonemes: FramePhoneme[]) => {
@@ -82,60 +72,43 @@ const searchVoicedSections = (phonemes: FramePhoneme[]) => {
   return voicedSections;
 };
 
-const makeWeight = (target: string) => {
-  const weights = new Map<string, number>();
-  weights.set("aa", 0);
-  weights.set("ih", 0);
-  weights.set("ou", 0);
-  weights.set("ee", 0);
-  weights.set("oh", 0);
-  if (weights.has(target)) {
-    weights.set(target, 1);
-  }
-  return weights;
-};
-
 const render = () => {
-  if (!canvasWidth) {
+  if (canvasWidth == undefined) {
     throw new Error("canvasWidth is undefined.");
   }
-  if (!canvasHeight) {
+  if (canvasHeight == undefined) {
     throw new Error("canvasHeight is undefined.");
   }
   if (!renderer) {
     throw new Error("renderer is undefined.");
   }
-  if (!scene) {
-    throw new Error("scene is undefined.");
+  if (!stage) {
+    throw new Error("stage is undefined.");
   }
-  if (!camera) {
-    throw new Error("camera is undefined.");
-  }
-/**
- * store.state.phrases からアクセスできるようになるもの
-   */
+
   const phrases = toRaw(store.state.phrases);
   const zoomX = store.state.sequencerZoomX;
   const zoomY = store.state.sequencerZoomY;
-  const playheadTicks = props.playheadTicks;
   const offsetX = props.offsetX;
   const offsetY = props.offsetY;
 
   // 無くなったフレーズを調べて、そのフレーズに対応するピッチラインを削除する
   for (const [phraseKey, pitchLines] of pitchLinesMap) {
     if (!phrases.has(phraseKey)) {
+      for (const pitchLine of pitchLines) {
+        stage.removeChild(pitchLine.lineStrip.displayObject);
+        pitchLine.lineStrip.destroy();
+      }
       pitchLinesMap.delete(phraseKey);
     }
   }
-  // ピッチラインの生成・更新を行う export type Phrase は type.ts にある
+  // ピッチラインの生成・更新を行う
   for (const [phraseKey, phrase] of phrases) {
-    if (!phrase.singer || !phrase.query || !phrase.startTime) {
+    if (!phrase.singer || !phrase.query || phrase.startTime == undefined) {
       continue;
     }
     const tempos = [toRaw(phrase.tempos[0])];
-    lastBpm = tempos[0].bpm;
     const tpqn = phrase.tpqn;
-    lastTpqn = tpqn;
     const startTime = phrase.startTime;
     const f0 = phrase.query.f0;
     const phonemes = phrase.query.phonemes;
@@ -152,7 +125,7 @@ const render = () => {
       for (const voicedSection of voicedSections) {
         const startFrame = voicedSection.startFrame;
         const frameLength = voicedSection.frameLength;
-        // 各フレームのticksは前もって計算しておく [s0 1 2 3]
+        // 各フレームのticksは前もって計算しておく
         const frameTicksArray: number[] = [];
         for (let j = 0; j < frameLength; j++) {
           const ticks = secondToTick(
@@ -162,17 +135,26 @@ const render = () => {
           );
           frameTicksArray.push(ticks);
         }
+        const lineStrip = new LineStrip(
+          frameLength,
+          pitchLineColor,
+          pitchLineWidth
+        );
         pitchLines.push({
           startFrame,
           frameLength,
           frameTicksArray,
+          lineStrip,
         });
       }
       // lineStripをステージに追加
+      for (const pitchLine of pitchLines) {
+        stage.addChild(pitchLine.lineStrip.displayObject);
+      }
       pitchLinesMap.set(phraseKey, pitchLines);
     }
 
-    /* // ピッチラインを更新
+    // ピッチラインを更新
     for (let i = 0; i < pitchLines.length; i++) {
       const pitchLine = pitchLines[i];
 
@@ -202,45 +184,9 @@ const render = () => {
         pitchLine.lineStrip.setPoint(j, x, y);
       }
       pitchLine.lineStrip.update();
-    }*/
+    }
   }
-
-  if (clock) {
-    const deltaTime = clock.getDelta();
-
-    const ang =
-      ((((Date.now() + offsetX + offsetY + zoomX + zoomY) % 2000) as number) /
-        2000.0) *
-      Math.PI *
-      2;
-    const topology = ((Date.now() / 1000.0) * Math.PI * 2.0 * lastBpm / 4.0) / 60.0;
-
-    currentVrm?.expressionManager?.setValue("blink", (Math.cos(ang) + 1) * 0.5);
-    const weights = makeWeight("ou");
-    for (const [key, value] of weights) {
-      currentVrm?.expressionManager?.setValue(key, value);
-    }
-
-    const pose = new Map<string, [number, number, number]>();
-    //pose.set("leftLowerArm", [0, Math.PI * 1.25, 0]);
-    pose.set("leftUpperArm", [0, 0, -Math.PI * 0.25]);
-    if (Number.isFinite(playheadTicks)) {
-      // 実時間ではなく小節数スケールで進む
-      pose.set("rightLowerArm", [0, 0, (playheadTicks / lastTpqn) * 2 * Math.PI * 0.25]);
-    }
-    pose.set("chest", [0, 0, Math.PI * 0.005 * Math.sin(topology)]);
-    pose.set("head", [0, 0, Math.PI * 0.02 * Math.sin(topology)]);
-    for (const [key, value] of pose) {
-      const bone = currentVrm?.humanoid?.getNormalizedBone(key);
-      if (!bone) {
-        continue;
-      }
-      bone.node?.rotation?.set(...value);
-    }
-    currentVrm?.update(deltaTime);
-  }
-
-  renderer.render(scene, camera);
+  renderer.render(stage);
 };
 
 watch(queries, () => {
@@ -251,7 +197,6 @@ watch(
   () => [
     store.state.sequencerZoomX,
     store.state.sequencerZoomY,
-    props.playheadTicks,
     props.offsetX,
     props.offsetY,
   ],
@@ -275,38 +220,18 @@ const initialize = () => {
   canvasElement.width = canvasWidth;
   canvasElement.height = canvasHeight;
   canvasContainerElement.appendChild(canvasElement);
-  renderer = new THREE.WebGLRenderer({
-    canvas: canvasElement,
+
+  renderer = new PIXI.Renderer({
+    view: canvasElement,
+    backgroundAlpha: 0,
     antialias: true,
   });
-  renderer.setClearColor(0x000000, 0.0);
-  scene = new THREE.Scene();
-
-  clock = new THREE.Clock();
-  clock.start();
-
-  function setCamera(width: number, height: number) {
-    camera = new THREE.PerspectiveCamera(45, width / height, 0.02, 100);
-    const lookHeight = 1.15;
-    camera.position.set(0, lookHeight, 0.5);
-    camera.lookAt(new THREE.Vector3(0, lookHeight, 0));
-    const portWidth = width * 0.6;
-    const portHeight = height * 0.6;
-    renderer?.setViewport(width - portWidth, 0, portWidth, portHeight); // height は下から
-  }
-
-  setCamera(4, 3);
-
-  {
-    const light = new THREE.DirectionalLight(0xffffff, Math.PI);
-    light.position.set(1, 1, 1);
-    scene?.add(light);
-  }
+  stage = new PIXI.Container();
 
   const callback = () => {
     if (renderInNextFrame) {
       render();
-      //renderInNextFrame = false;
+      renderInNextFrame = false;
     }
     requestId = window.requestAnimationFrame(callback);
   };
@@ -323,40 +248,12 @@ const initialize = () => {
     if (canvasContainerWidth > 0 && canvasContainerHeight > 0) {
       canvasWidth = canvasContainerWidth;
       canvasHeight = canvasContainerHeight;
-      renderer.setSize(canvasWidth, canvasHeight);
+      renderer.resize(canvasWidth, canvasHeight);
       renderInNextFrame = true;
-      setCamera(canvasWidth, canvasHeight);
     }
   });
   resizeObserver.observe(canvasContainerElement);
-/*
-  {
-    const loader = new GLTFLoader();
-    loader.register((parser) => {
-      return new VRMLoaderPlugin(parser);
-    });
-    loader.load(
-      "./res/model/Zundamon(Human)_VRM_10.vrm",
-      (gltf) => {
-        const vrm = gltf.userData.vrm;
-        scene?.add(vrm.scene);
-        console.log("vrm success", vrm);
-        currentVrm = vrm;
 
-        console.log(
-          "vrm expression",
-          vrm?.expressionManager?.mouthExpressionNames
-        );
-      },
-      (progress: ProgressEvent) => {
-        console.log("vrm progress", (100 * progress.loaded) / progress.total);
-      },
-      (error) => {
-        console.error("vrm loader", error);
-      }
-    );
-  }
-*/
   isInstantiated = true;
 };
 
@@ -364,9 +261,14 @@ const cleanUp = () => {
   if (requestId != undefined) {
     window.cancelAnimationFrame(requestId);
   }
-  scene?.clear();
+  stage?.destroy();
+  pitchLinesMap.forEach((pitchLines) => {
+    pitchLines.forEach((pitchLine) => {
+      pitchLine.lineStrip.destroy();
+    });
+  });
   pitchLinesMap.clear();
-  renderer?.dispose();
+  renderer?.destroy(true);
   resizeObserver?.disconnect();
 
   isInstantiated = false;

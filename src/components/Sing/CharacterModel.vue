@@ -8,13 +8,26 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 import { VRMLoaderPlugin } from "@pixiv/three-vrm";
 import { useStore } from "@/store";
-import { frequencyToNoteNumber, secondToTick } from "@/sing/domain";
-import { noteNumberToBaseY, tickToBaseX } from "@/sing/viewHelper";
+import { secondToTick } from "@/sing/domain";
 import { FramePhoneme } from "@/openapi";
 
-type VoicedSection = {
+type Section = {
   readonly startFrame: number;
   readonly frameLength: number;
+  readonly endFrame: number; // この値は含まない
+  startTick: number;
+  endTick: number;
+  readonly phonemeString: string;
+};
+
+type OneFrame = {
+  // 開始フレーム
+  readonly startFrame: number;
+  readonly frameLength: number;
+  readonly endFrame: number; // この値は含まない
+  startTick: number;
+  endTick: number;
+  readonly sections: Section[];
 };
 
 type PitchLine = {
@@ -28,7 +41,6 @@ const props =
     isActivated: boolean;
     playheadTicks: number;
     offsetX: number;
-    offsetY: number;
   }>();
 
 const store = useStore();
@@ -51,35 +63,43 @@ let requestId: number | undefined;
 let renderInNextFrame = false;
 let lastBpm = 120;
 let lastTpqn = 480;
+let lastLip = "";
+
+const phonemeToExpression = new Map<string, string>([
+  ["a", "aa"],
+  ["i", "ih"],
+  ["u", "ou"],
+  ["e", "ee"],
+  ["o", "oh"],
+  ["pau", "___silent"],
+]);
 
 /**
  * このコンポーネントの変数
  */
 const pitchLinesMap = new Map<string, PitchLine[]>();
 
-const searchVoicedSections = (phonemes: FramePhoneme[]) => {
-  const voicedSections: VoicedSection[] = [];
+const frameMap = new Map<string, OneFrame>();
+
+/**
+ * フレーム単位でセクション配列を返す
+ */
+const searchSections = (phonemes: FramePhoneme[]) => {
+  const sections: Section[] = [];
   let currentFrame = 0;
-  let voicedSectionStartFrame = 0;
-  let voicedSectionFrameLength = 0;
-  // NOTE: 一旦、pauではない区間を有声区間とする
   for (let i = 0; i < phonemes.length; i++) {
     const phoneme = phonemes[i];
-    if (phoneme.phoneme !== "pau") {
-      if (i === 0 || phonemes[i - 1].phoneme === "pau") {
-        voicedSectionStartFrame = currentFrame;
-      }
-      voicedSectionFrameLength += phoneme.frameLength;
-      if (i + 1 === phonemes.length || phonemes[i + 1].phoneme === "pau") {
-        voicedSections.push({
-          startFrame: voicedSectionStartFrame,
-          frameLength: voicedSectionFrameLength,
-        });
-      }
-    }
+    sections.push({
+      startFrame: currentFrame,
+      frameLength: phoneme.frameLength,
+      endFrame: currentFrame + phoneme.frameLength,
+      startTick: 0,
+      endTick: 0,
+      phonemeString: phoneme.phoneme,
+    });
     currentFrame += phoneme.frameLength;
   }
-  return voicedSections;
+  return sections;
 };
 
 const makeWeight = (target: string) => {
@@ -93,6 +113,33 @@ const makeWeight = (target: string) => {
     weights.set(target, 1);
   }
   return weights;
+};
+
+const searchSection = (headTick: number) => {
+  const section: Section = {
+    startFrame: 0,
+    frameLength: 0,
+    endFrame: 0,
+    startTick: 0,
+    endTick: 0,
+    phonemeString: "pau",
+  };
+  for (const oneframe of frameMap.values()) {
+    if (headTick < oneframe.startTick || oneframe.endTick < headTick) {
+      continue;
+    }
+    for (const section of oneframe.sections) {
+      if (headTick < section.startTick || section.endTick < headTick) {
+        continue;
+      }
+      return section;
+    }
+  }
+  return section;
+};
+
+const degToRad = (deg: number) => {
+  return (deg * Math.PI) / 180;
 };
 
 const render = () => {
@@ -111,52 +158,54 @@ const render = () => {
   if (!camera) {
     throw new Error("camera is undefined.");
   }
-/**
- * store.state.phrases からアクセスできるようになるもの
-   */
+  // フレーズ配列
   const phrases = toRaw(store.state.phrases);
-  const zoomX = store.state.sequencerZoomX;
-  const zoomY = store.state.sequencerZoomY;
   const playheadTicks = props.playheadTicks;
   const offsetX = props.offsetX;
-  const offsetY = props.offsetY;
 
-  // 無くなったフレーズを調べて、そのフレーズに対応するピッチラインを削除する
-  for (const [phraseKey, pitchLines] of pitchLinesMap) {
+  // 無くなったフレーズを調べて、そのフレーズに対応する値を削除する。phraseKey は uuidv4 みたいなもの
+  for (const phraseKey of frameMap.keys()) {
     if (!phrases.has(phraseKey)) {
-      pitchLinesMap.delete(phraseKey);
+      frameMap.delete(phraseKey);
     }
   }
   // ピッチラインの生成・更新を行う export type Phrase は type.ts にある
+  /*
   for (const [phraseKey, phrase] of phrases) {
     if (!phrase.singer || !phrase.query || !phrase.startTime) {
       continue;
     }
+
     const tempos = [toRaw(phrase.tempos[0])];
     lastBpm = tempos[0].bpm;
     const tpqn = phrase.tpqn;
     lastTpqn = tpqn;
-    const startTime = phrase.startTime;
-    const f0 = phrase.query.f0;
+    const startTime = phrase.startTime; // 秒
+    //const f0 = phrase.query.f0; // 配列であって
     const phonemes = phrase.query.phonemes;
     const engineId = phrase.singer.engineId;
+    // だいたい 24000 / 256
     const frameRate = store.state.engineManifests[engineId].frameRate;
+    lastFrameRate = frameRate;
     let pitchLines = pitchLinesMap.get(phraseKey);
+    lastPhraseKey = phraseKey;
+    document.body.dataset["xPhraseKey"] = phraseKey;
 
     // フレーズに対応するピッチラインが無かったら生成する
     if (!pitchLines) {
-      // 有声区間を調べる
-      const voicedSections = searchVoicedSections(phonemes);
+      // 区間を調べる
+      const sections = searchSections(phonemes);
       // 有声区間のピッチラインを生成
       pitchLines = [];
-      for (const voicedSection of voicedSections) {
-        const startFrame = voicedSection.startFrame;
-        const frameLength = voicedSection.frameLength;
+      let s = "" + frameRate;
+      for (const section of sections) {
+        const startFrame = section.startFrame;
+        const frameLength = section.frameLength;
         // 各フレームのticksは前もって計算しておく [s0 1 2 3]
         const frameTicksArray: number[] = [];
         for (let j = 0; j < frameLength; j++) {
           const ticks = secondToTick(
-            startTime + (startFrame + j) / frameRate,
+            startTime + (startFrame + j) / frameRate, // 秒単位
             tempos,
             tpqn
           );
@@ -167,12 +216,20 @@ const render = () => {
           frameLength,
           frameTicksArray,
         });
+        lastLip = phonemeToExpression.get(section.phonemeString) || lastLip;
+        //lastPhonemeString = section.phonemeString || lastPhonemeString;
+        s += `, {${section.phonemeString}, ${startFrame}, ${frameLength}}`;
       }
       // lineStripをステージに追加
       pitchLinesMap.set(phraseKey, pitchLines);
+
+      {
+        document.body.dataset["xPhoneme"] = s;
+        //if (s.length > 0) console.log(s);
+      }
     }
 
-    /* // ピッチラインを更新
+    // ピッチラインを更新
     for (let i = 0; i < pitchLines.length; i++) {
       const pitchLine = pitchLines[i];
 
@@ -184,11 +241,6 @@ const render = () => {
       const endTicks = pitchLine.frameTicksArray[lastIndex];
       const endBaseX = tickToBaseX(endTicks, tpqn);
       const endX = endBaseX * zoomX - offsetX;
-      if (startX >= canvasWidth || endX <= 0) {
-        pitchLine.lineStrip.renderable = false;
-        continue;
-      }
-      pitchLine.lineStrip.renderable = true;
 
       // ポイントを計算してlineStripに設定＆更新
       for (let j = 0; j < pitchLine.frameLength; j++) {
@@ -199,39 +251,114 @@ const render = () => {
         const noteNumber = frequencyToNoteNumber(freq);
         const baseY = noteNumberToBaseY(noteNumber);
         const y = baseY * zoomY - offsetY;
-        pitchLine.lineStrip.setPoint(j, x, y);
       }
-      pitchLine.lineStrip.update();
-    }*/
+    }
+  } */
+
+  // ピッチラインの生成・更新を行う export type Phrase は type.ts にある
+  for (const [phraseKey, phrase] of phrases) {
+    if (!phrase.singer || !phrase.query || !phrase.startTime) {
+      continue;
+    }
+
+    const tempos = [toRaw(phrase.tempos[0])];
+    lastBpm = tempos[0].bpm;
+    const tpqn = phrase.tpqn;
+    lastTpqn = tpqn;
+    const startTime = phrase.startTime; // 秒
+    //const f0 = phrase.query.f0; // 配列であって
+    const phonemes = phrase.query.phonemes;
+    const engineId = phrase.singer.engineId;
+    // だいたい 24000 / 256
+    const frameRate = store.state.engineManifests[engineId].frameRate;
+    let oneframe = frameMap.get(phraseKey);
+    document.body.dataset["xPhraseKey"] = phraseKey;
+
+    // フレーズに対応するピッチラインが無かったら生成する
+    if (!oneframe) {
+      // 区間を調べる
+      const sections = searchSections(phonemes);
+      oneframe = {
+        startFrame: sections[0].startFrame,
+        endFrame: sections[sections.length - 1].endFrame,
+        frameLength: 0,
+        startTick: 0,
+        endTick: 0,
+        sections,
+      };
+      oneframe.startTick = secondToTick(
+        startTime, // 秒単位
+        tempos, // position は tick
+        tpqn
+      );
+      oneframe.endTick = secondToTick(
+        startTime + (oneframe.endFrame - oneframe.startFrame) / frameRate,
+        tempos,
+        tpqn
+      );
+      let s = "" + frameRate;
+      for (const section of sections) {
+        const startFrame = section.startFrame;
+        const frameLength = section.frameLength;
+        section.startTick = secondToTick(
+          startTime + section.startFrame / frameRate,
+          tempos,
+          tpqn
+        );
+        section.endTick = secondToTick(
+          startTime + section.endFrame / frameRate,
+          tempos,
+          tpqn
+        );
+
+        lastLip = phonemeToExpression.get(section.phonemeString) || lastLip;
+        s += `, {${section.phonemeString}, ${startFrame}, ${frameLength}}`;
+      }
+      frameMap.set(phraseKey, oneframe);
+      {
+        document.body.dataset["xPhoneme"] = s;
+      }
+    }
+  }
+
+  //const curBeat = playheadTicks / lastTpqn; // これはできてる感じ
+  //const curSecond = curBeat * 60 / lastBpm; // すぐに反映されない感じ
+  //const curFrame = curSecond * lastFrameRate;
+  const section = searchSection(playheadTicks);
+  lastLip = phonemeToExpression.get(section.phonemeString) || lastLip;
+  {
+    document.body.dataset["xLip"] = `, ${lastLip}, ${lastBpm}`;
   }
 
   if (clock) {
     const deltaTime = clock.getDelta();
 
     const ang =
-      ((((Date.now() + offsetX + offsetY + zoomX + zoomY) % 2000) as number) /
-        2000.0) *
-      Math.PI *
-      2;
-    const topology = ((Date.now() / 1000.0) * Math.PI * 2.0 * lastBpm / 4.0) / 60.0;
+      ((((Date.now() + offsetX) % 2000) as number) / 2000.0) * Math.PI * 2;
 
-    currentVrm?.expressionManager?.setValue("blink", (Math.cos(ang) + 1) * 0.5);
-    const weights = makeWeight("ou");
+    const weights = makeWeight(lastLip);
+    //weights.set("", 0);
+    weights.set("Hauu", Math.round((Math.cos(ang) + 1) * 0.5));
     for (const [key, value] of weights) {
       currentVrm?.expressionManager?.setValue(key, value);
     }
 
-    const pose = new Map<string, [number, number, number]>();
-    //pose.set("leftLowerArm", [0, Math.PI * 1.25, 0]);
-    pose.set("leftUpperArm", [0, 0, -Math.PI * 0.25]);
     let mod = 0;
     if (Number.isFinite(playheadTicks)) {
       // 実時間ではなく小節数スケールで進む
-      pose.set("rightLowerArm", [0, 0, (playheadTicks / lastTpqn) * 2 * Math.PI * 0.25]);
+      //pose.set("rightLowerArm", [0, 0, (playheadTicks / lastTpqn) * 2 * Math.PI * 0.25]);
       mod = (playheadTicks % (lastTpqn * 4)) / (lastTpqn * 4);
     }
-    pose.set("chest", [0, 0, Math.PI * 0.005 * ease(mod)]);
-    pose.set("head", [0, 0, Math.PI * 0.02 * ease(mod)]);
+    const pose = new Map<string, [number, number, number]>([
+      ["leftUpperArm", [0, 0, -degToRad(50)]],
+      ["leftLowerArm", [degToRad(30), -degToRad(140), 0]],
+      ["leftHand", [0, -degToRad(10), degToRad(12)]],
+      ["rightUpperArm", [0, 0, degToRad(50)]],
+      ["rightLowerArm", [degToRad(30), degToRad(140), 0]],
+      ["rightHand", [0, degToRad(10), -degToRad(12)]],
+      ["chest", [0, 0, Math.PI * 0.01 * ease(mod)]],
+      ["head", [0, 0, Math.PI * 0.04 * ease(mod)]],
+    ]);
     for (const [key, value] of pose) {
       const bone = currentVrm?.humanoid?.getNormalizedBone(key);
       if (!bone) {
@@ -250,13 +377,7 @@ watch(queries, () => {
 });
 
 watch(
-  () => [
-    store.state.sequencerZoomX,
-    store.state.sequencerZoomY,
-    props.playheadTicks,
-    props.offsetX,
-    props.offsetY,
-  ],
+  () => [props.playheadTicks, props.offsetX],
   () => {
     renderInNextFrame = true;
   }
@@ -264,22 +385,20 @@ watch(
 
 let isInstantiated = false;
 
-const linear = (_this: any, t: number) => {
-  return (_this.y1 - _this.y0) * (t - _this.x0) / (_this.x1 - _this.x0) + _this.y0;
+const cosEase = (_this: any, t: number) => {
+  return (
+    _this.y0 +
+    (1 - Math.cos((Math.PI * (t - _this.x0)) / (_this.x1 - _this.x0))) *
+      0.5 *
+      (_this.y1 - _this.y0)
+  );
 };
 
-const first = 0.125;
-const second = 0.125;
-
 const sections = [
-  { x0: 0, x1: first, y0: -1, y1: -1, f: (t: number) => -1 },
-  { x0: first, x1: 0.25, y0: -1, y1: 0, f: linear },
-  { x0: 0.25, x1: 0.25 + second, y0: 0, y1: 0, f: (t: number) => 0 },
-  { x0: 0.25 + second, x1: 0.5, y0: 0, y1: 1, f: linear },
-  { x0: 0.5, x1: 0.5 + first, y0: 1, y1: 1, f: (t: number) => 1 },
-  { x0: 0.5 + first, x1: 0.75, y0: 1, y1: 0, f: linear },
-  { x0: 0.75, x1: 0.75 + second, y0: 0, y1: 0, f: (t: number) => 0 },
-  { x0: 0.75 + second, x1: 1, y0: 0, y1: -1, f: linear },
+  { x0: 0, x1: 0.25, y0: -1, y1: -1, f: () => -1 },
+  { x0: 0.25, x1: 0.5, y0: -1, y1: 1, f: cosEase },
+  { x0: 0.5, x1: 0.75, y0: 1, y1: 1, f: () => 1 },
+  { x0: 0.75, x1: 1, y0: 1, y1: -1, f: cosEase },
 ];
 
 function ease(t: number) {
@@ -289,7 +408,7 @@ function ease(t: number) {
     }
   }
   return 1;
-};
+}
 
 const initialize = () => {
   const canvasContainerElement = canvasContainer.value;
@@ -308,7 +427,7 @@ const initialize = () => {
     canvas: canvasElement,
     antialias: true,
   });
-  renderer.setClearColor(0x000000, 0.5);
+  renderer.setClearColor(0x000000, 0);
   scene = new THREE.Scene();
 
   clock = new THREE.Clock();
@@ -437,6 +556,7 @@ onUnmounted(() => {
 @use '@/styles/colors' as colors;
 
 .canvas-container {
+  opacity: 0.5;
   overflow: hidden;
   z-index: 0;
   pointer-events: none;
