@@ -112,7 +112,7 @@ const makeWeight = (target: string) => {
 };
 
 const searchSection = (headTick: number) => {
-  const section: Section = {
+  const result: Section = {
     startFrame: 0,
     frameLength: 0,
     endFrame: 0,
@@ -130,10 +130,13 @@ const searchSection = (headTick: number) => {
       if (headTick < section.startTick || section.endTick < headTick) {
         continue;
       }
+      if (section.phonemeString === "pau") {
+        continue; // フレームの最後が後続の先頭にかぶる
+      }
       return section;
     }
   }
-  return section;
+  return result;
 };
 
 const degToRad = (deg: number) => {
