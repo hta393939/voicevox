@@ -98,15 +98,17 @@ const searchSections = (phonemes: FramePhoneme[]) => {
   return sections;
 };
 
-const makeWeight = (target: string) => {
-  const weights = new Map<string, number>();
-  weights.set("aa", 0);
-  weights.set("ih", 0);
-  weights.set("ou", 0);
-  weights.set("ee", 0);
-  weights.set("oh", 0);
+// 母音すべての 0～1 のウェイトを返す
+const makeWeight = (target: string, weight: number) => {
+  const weights = new Map<string, number>([
+    ["aa", 0],
+    ["ih", 0],
+    ["ou", 0],
+    ["ee", 0],
+    ["oh", 0],
+  ]);
   if (weights.has(target)) {
-    weights.set(target, 1);
+    weights.set(target, weight);
   }
   return weights;
 };
@@ -446,7 +448,7 @@ const render = () => {
     document.body.dataset["xLip"] = `, ${lip}`;
   }
 
-  const weights = makeWeight(isEnd ? EXP_CLOSE : lip);
+  const weights = makeWeight(isEnd ? EXP_CLOSE : lip, section.weight);
   // 長いとき Hauu にする
   const len = section.endTick - section.startTick;
   const hauuWeight = len >= lastTpqn * 2 && lip !== EXP_CLOSE ? 1 : 0;
