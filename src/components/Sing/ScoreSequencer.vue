@@ -131,13 +131,14 @@
     </div>
     <CharacterModel
       v-if="showPitch"
-      class="character-model"
+      class="sequencer-pitch"
       :style="{
         marginRight: `${scrollBarWidth}px`,
         marginBottom: `${scrollBarWidth}px`,
       }"
       :is-activated="isActivated"
       :playhead-ticks="playheadTicks"
+      :offset-x="0"
     />
     <SequencerPitch
       v-if="showPitch"
