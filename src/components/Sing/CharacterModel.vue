@@ -58,14 +58,13 @@ let clock: THREE.Clock | undefined;
 let currentVrm: VRMCore | undefined;
 let requestId: number | undefined;
 let renderInNextFrame = false;
-let lastBpm = 120;
 let lastTpqn = 480;
 // 口を閉じた状態
 const EXP_CLOSE = "__silent";
 let lastEndTick = 0;
-let endingDir = 0;
 let isEnd = false;
-
+let lastRot: [number, number, number] | null = null;
+// 母音と判定する phoneme をキーとする
 const vowelMap = new Map<string, string>([
   ["a", "aa"],
   ["i", "ih"],
@@ -163,7 +162,6 @@ const render = () => {
   // フレーズ配列
   const phrases = toRaw(store.state.phrases);
   const playheadTicks = props.playheadTicks;
-  const offsetX = props.offsetX;
 
   // 無くなったフレーズを調べて、そのフレーズに対応する値を削除する。phraseKey は uuidv4 みたいなもの
   let isDelete = false;
@@ -272,7 +270,6 @@ const render = () => {
     }
 
     const tempos = [toRaw(phrase.tempos[0])];
-    lastBpm = tempos[0].bpm;
     const tpqn = phrase.tpqn;
     lastTpqn = tpqn;
     const startTime = phrase.startTime; // 秒
@@ -323,7 +320,9 @@ const render = () => {
         tempos,
         tpqn
       );
-      lastEndTick = Math.max(lastEndTick, section.endTick);
+      if (section.phonemeString !== "pau") {
+        lastEndTick = Math.max(lastEndTick, section.endTick);
+      }
       let exp = EXP_CLOSE;
       let weight = 1;
       const consonantWeight = 0.7;
@@ -378,14 +377,10 @@ const render = () => {
   }
 
   const deltaTime = clock.getDelta();
-
-  const ang =
-    ((((Date.now() + offsetX) % 2000) as number) / 2000.0) * Math.PI * 2;
-
+  // モーション
   let mod = 0;
   if (Number.isFinite(playheadTicks)) {
     // 実時間ではなく小節数スケールで進む
-    //pose.set("rightLowerArm", [0, 0, (playheadTicks / lastTpqn) * 2 * Math.PI * 0.25]);
     mod = (playheadTicks % (lastTpqn * 4)) / (lastTpqn * 4);
   }
   const pose = new Map<string, [number, number, number]>([
@@ -399,26 +394,38 @@ const render = () => {
   let zrot = degToRad(1.8 * ease(mod));
   let xrot = degToRad(3 * (1 - Math.sin(degToRad(180 * ((mod * 4) % 1)))));
 
-  const past = playheadTicks - lastEndTick;
-  if (past > 0) {
+  const pastTick = playheadTicks - lastEndTick;
+  if (pastTick > 0) {
     if (!isEnd) {
-      const t = Math.min(1, past / lastTpqn);
-      zrot = zrot * (1 - t);
-      xrot = xrot * (1 - t);
+      if (!lastRot) {
+        lastRot = [xrot, 0, zrot];
+      }
+
+      const t = Math.min(1, pastTick / lastTpqn);
+      const cosEase = (tt: number) => {
+        return (1 - Math.cos(tt * Math.PI)) * 0.5;
+      };
+      zrot = lastRot[2] * (1 - cosEase(t));
+      xrot = lastRot[0] * (1 - cosEase(t));
       if (t === 1) {
         isEnd = true;
+        lastRot = null;
       }
     }
   } else {
     isEnd = false;
+    lastRot = null;
     const t = playheadTicks / lastTpqn;
     if (t < 1) {
-      const rot = cosEase({
+      const rot = twoPointEase(
+        {
           x0: 0,
           y0: 0,
           x1: 1,
           y1: -1,
-      }, t);
+        },
+        t
+      );
       zrot = degToRad(1.8 * rot);
     }
   }
@@ -429,6 +436,29 @@ const render = () => {
   pose.set("chest", [0, 0, zrot]);
   pose.set("head", [xrot, 0, zrot * 4]);
 
+  // 表情
+  const section = searchSection(playheadTicks);
+  const lip = section.expression;
+  {
+    document.body.dataset["xLip"] = `, ${lip}`;
+  }
+
+  const weights = makeWeight(isEnd ? EXP_CLOSE : lip);
+  // 長いとき Hauu にする
+  const len = section.endTick - section.startTick;
+  const hauuWeight = len >= lastTpqn * 2 && lip !== EXP_CLOSE ? 1 : 0;
+  weights.set("Hauu", hauuWeight);
+
+  const endAppend = Math.min(1, (pastTick - lastTpqn * 3) / 24);
+  weights.set("Wink_L", endAppend);
+  if (endAppend > 0) {
+    pose.set("head", [0, 0, -degToRad(5 * endAppend)]);
+  }
+
+  // 反映
+  for (const [key, value] of weights) {
+    currentVrm?.expressionManager?.setValue(key, value);
+  }
   for (const [key, value] of pose) {
     const bone = currentVrm?.humanoid?.getNormalizedBone(
       key as VRMHumanBoneName
@@ -438,19 +468,7 @@ const render = () => {
     }
     bone.node?.rotation?.set(...value);
   }
-
-  const section = searchSection(playheadTicks);
-  const lip = section.expression;
-  {
-    document.body.dataset["xLip"] = `, ${lip}, ${lastBpm}`;
-  }
-
-  const weights = makeWeight(isEnd ? EXP_CLOSE : lip);
-  weights.set("Hauu", Math.round((Math.cos(ang) + 1) * 0.5));
-  for (const [key, value] of weights) {
-    currentVrm?.expressionManager?.setValue(key, value);
-  }
-
+  // 揺れものの計算
   currentVrm?.update(deltaTime);
 
   renderer.render(scene, camera);
@@ -476,7 +494,7 @@ type TwoPoint = {
   readonly y1: number;
 };
 
-const cosEase = (_this: TwoPoint, t: number) => {
+const twoPointEase = (_this: TwoPoint, t: number) => {
   return (
     _this.y0 +
     (1 - Math.cos((Math.PI * (t - _this.x0)) / (_this.x1 - _this.x0))) *
@@ -487,9 +505,9 @@ const cosEase = (_this: TwoPoint, t: number) => {
 
 const sections = [
   { x0: 0, x1: 0.25, y0: -1, y1: -1, f: () => -1 },
-  { x0: 0.25, x1: 0.5, y0: -1, y1: 1, f: cosEase },
+  { x0: 0.25, x1: 0.5, y0: -1, y1: 1, f: twoPointEase },
   { x0: 0.5, x1: 0.75, y0: 1, y1: 1, f: () => 1 },
-  { x0: 0.75, x1: 1, y0: 1, y1: -1, f: cosEase },
+  { x0: 0.75, x1: 1, y0: 1, y1: -1, f: twoPointEase },
 ];
 
 function ease(t: number) {
