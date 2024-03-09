@@ -6,7 +6,8 @@
 import { ref, watch, toRaw, computed, onUnmounted, onMounted } from "vue";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
-import { VRMLoaderPlugin } from "@pixiv/three-vrm";
+import { VRMHumanBoneName, VRMLoaderPlugin } from "@pixiv/three-vrm";
+import type { VRMCore } from "@pixiv/three-vrm";
 import { useStore } from "@/store";
 import { secondToTick } from "@/sing/domain";
 import { FramePhoneme } from "@/openapi";
@@ -17,6 +18,8 @@ type Section = {
   readonly endFrame: number; // この値は含まない
   startTick: number;
   endTick: number;
+  expression: string;
+  weight: number;
   readonly phonemeString: string;
 };
 
@@ -28,12 +31,6 @@ type OneFrame = {
   startTick: number;
   endTick: number;
   readonly sections: Section[];
-};
-
-type PitchLine = {
-  readonly startFrame: number;
-  readonly frameLength: number;
-  readonly frameTicksArray: number[];
 };
 
 const props =
@@ -58,26 +55,24 @@ let renderer: THREE.WebGLRenderer | undefined;
 let scene: THREE.Scene | undefined;
 let camera: THREE.OrthographicCamera | THREE.PerspectiveCamera | undefined;
 let clock: THREE.Clock | undefined;
-let currentVrm: any | undefined;
+let currentVrm: VRMCore | undefined;
 let requestId: number | undefined;
 let renderInNextFrame = false;
 let lastBpm = 120;
 let lastTpqn = 480;
-let lastLip = "";
+// 口を閉じた状態
+const EXP_CLOSE = "__silent";
+let lastEndTick = 0;
+let endingDir = 0;
+let isEnd = false;
 
-const phonemeToExpression = new Map<string, string>([
+const vowelMap = new Map<string, string>([
   ["a", "aa"],
   ["i", "ih"],
   ["u", "ou"],
   ["e", "ee"],
   ["o", "oh"],
-  ["pau", "___silent"],
 ]);
-
-/**
- * このコンポーネントの変数
- */
-const pitchLinesMap = new Map<string, PitchLine[]>();
 
 const frameMap = new Map<string, OneFrame>();
 
@@ -95,6 +90,8 @@ const searchSections = (phonemes: FramePhoneme[]) => {
       endFrame: currentFrame + phoneme.frameLength,
       startTick: 0,
       endTick: 0,
+      expression: "",
+      weight: 1,
       phonemeString: phoneme.phoneme,
     });
     currentFrame += phoneme.frameLength;
@@ -122,6 +119,8 @@ const searchSection = (headTick: number) => {
     endFrame: 0,
     startTick: 0,
     endTick: 0,
+    expression: EXP_CLOSE,
+    weight: 1,
     phonemeString: "pau",
   };
   for (const oneframe of frameMap.values()) {
@@ -158,15 +157,26 @@ const render = () => {
   if (!camera) {
     throw new Error("camera is undefined.");
   }
+  if (!clock) {
+    throw new Error("clock is undefined.");
+  }
   // フレーズ配列
   const phrases = toRaw(store.state.phrases);
   const playheadTicks = props.playheadTicks;
   const offsetX = props.offsetX;
 
   // 無くなったフレーズを調べて、そのフレーズに対応する値を削除する。phraseKey は uuidv4 みたいなもの
+  let isDelete = false;
   for (const phraseKey of frameMap.keys()) {
     if (!phrases.has(phraseKey)) {
       frameMap.delete(phraseKey);
+      isDelete = true;
+    }
+  }
+  if (isDelete) {
+    lastEndTick = 0;
+    for (const oneframe of frameMap.values()) {
+      lastEndTick = Math.max(lastEndTick, oneframe.endTick);
     }
   }
   // ピッチラインの生成・更新を行う export type Phrase は type.ts にある
@@ -255,7 +265,7 @@ const render = () => {
     }
   } */
 
-  // ピッチラインの生成・更新を行う export type Phrase は type.ts にある
+  // phoneme, expression の生成・更新を行う export type Phrase は type.ts にある
   for (const [phraseKey, phrase] of phrases) {
     if (!phrase.singer || !phrase.query || !phrase.startTime) {
       continue;
@@ -275,99 +285,173 @@ const render = () => {
     document.body.dataset["xPhraseKey"] = phraseKey;
 
     // フレーズに対応するピッチラインが無かったら生成する
-    if (!oneframe) {
-      // 区間を調べる
-      const sections = searchSections(phonemes);
-      oneframe = {
-        startFrame: sections[0].startFrame,
-        endFrame: sections[sections.length - 1].endFrame,
-        frameLength: 0,
-        startTick: 0,
-        endTick: 0,
-        sections,
-      };
-      oneframe.startTick = secondToTick(
-        startTime, // 秒単位
-        tempos, // position は tick
-        tpqn
-      );
-      oneframe.endTick = secondToTick(
-        startTime + (oneframe.endFrame - oneframe.startFrame) / frameRate,
+    if (oneframe) {
+      continue;
+    }
+    // 区間を調べる
+    const sections = searchSections(phonemes);
+    oneframe = {
+      startFrame: sections[0].startFrame,
+      endFrame: sections[sections.length - 1].endFrame,
+      frameLength: 0,
+      startTick: 0,
+      endTick: 0,
+      sections,
+    };
+    oneframe.startTick = secondToTick(
+      startTime, // 秒単位
+      tempos, // position は tick
+      tpqn
+    );
+    oneframe.endTick = secondToTick(
+      startTime + (oneframe.endFrame - oneframe.startFrame) / frameRate,
+      tempos,
+      tpqn
+    );
+    let s = "" + frameRate;
+    const num = sections.length;
+    for (let i = 0; i < num; ++i) {
+      const section = sections[i];
+      const startFrame = section.startFrame;
+      section.startTick = secondToTick(
+        startTime + section.startFrame / frameRate,
         tempos,
         tpqn
       );
-      let s = "" + frameRate;
-      for (const section of sections) {
-        const startFrame = section.startFrame;
-        const frameLength = section.frameLength;
-        section.startTick = secondToTick(
-          startTime + section.startFrame / frameRate,
-          tempos,
-          tpqn
-        );
-        section.endTick = secondToTick(
-          startTime + section.endFrame / frameRate,
-          tempos,
-          tpqn
-        );
-
-        lastLip = phonemeToExpression.get(section.phonemeString) || lastLip;
-        s += `, {${section.phonemeString}, ${startFrame}, ${frameLength}}`;
+      section.endTick = secondToTick(
+        startTime + section.endFrame / frameRate,
+        tempos,
+        tpqn
+      );
+      lastEndTick = Math.max(lastEndTick, section.endTick);
+      let exp = EXP_CLOSE;
+      let weight = 1;
+      const consonantWeight = 0.7;
+      switch (section.phonemeString) {
+        case "m":
+        case "b":
+        case "p":
+        case "N":
+        case "pau":
+          exp = EXP_CLOSE;
+          break;
+        case "w":
+          weight = consonantWeight;
+          exp = "ou";
+          break;
+        case "a":
+          exp = "aa";
+          break;
+        case "i":
+          exp = "ih";
+          break;
+        case "u":
+          exp = "ou";
+          break;
+        case "e":
+          exp = "ee";
+          break;
+        case "o":
+          exp = "oh";
+          break;
+        default:
+          {
+            weight = consonantWeight;
+            const next = sections[i + 1];
+            const nextExp = vowelMap.get(next?.phonemeString);
+            if (nextExp) {
+              exp = nextExp;
+            } else {
+              exp = "ou";
+            }
+          }
+          break;
       }
-      frameMap.set(phraseKey, oneframe);
-      {
-        document.body.dataset["xPhoneme"] = s;
-      }
+      section.expression = exp;
+      section.weight = weight;
+      s += `, {${section.phonemeString}, ${startFrame}}`;
+    }
+    frameMap.set(phraseKey, oneframe);
+    {
+      document.body.dataset["xPhoneme"] = s;
     }
   }
 
-  //const curBeat = playheadTicks / lastTpqn; // これはできてる感じ
-  //const curSecond = curBeat * 60 / lastBpm; // すぐに反映されない感じ
-  //const curFrame = curSecond * lastFrameRate;
+  const deltaTime = clock.getDelta();
+
+  const ang =
+    ((((Date.now() + offsetX) % 2000) as number) / 2000.0) * Math.PI * 2;
+
+  let mod = 0;
+  if (Number.isFinite(playheadTicks)) {
+    // 実時間ではなく小節数スケールで進む
+    //pose.set("rightLowerArm", [0, 0, (playheadTicks / lastTpqn) * 2 * Math.PI * 0.25]);
+    mod = (playheadTicks % (lastTpqn * 4)) / (lastTpqn * 4);
+  }
+  const pose = new Map<string, [number, number, number]>([
+    ["leftUpperArm", [0, 0, -degToRad(50)]],
+    ["leftLowerArm", [degToRad(30), -degToRad(140), 0]],
+    ["leftHand", [0, -degToRad(10 + 3), degToRad(12)]],
+    ["rightUpperArm", [0, 0, degToRad(50)]],
+    ["rightLowerArm", [degToRad(30), degToRad(140), 0]],
+    ["rightHand", [0, degToRad(10), -degToRad(12)]],
+  ]);
+  let zrot = degToRad(1.8 * ease(mod));
+  let xrot = degToRad(3 * (1 - Math.sin(degToRad(180 * ((mod * 4) % 1)))));
+
+  const past = playheadTicks - lastEndTick;
+  if (past > 0) {
+    if (!isEnd) {
+      const t = Math.min(1, past / lastTpqn);
+      zrot = zrot * (1 - t);
+      xrot = xrot * (1 - t);
+      if (t === 1) {
+        isEnd = true;
+      }
+    }
+  } else {
+    isEnd = false;
+    const t = playheadTicks / lastTpqn;
+    if (t < 1) {
+      const rot = cosEase({
+          x0: 0,
+          y0: 0,
+          x1: 1,
+          y1: -1,
+      }, t);
+      zrot = degToRad(1.8 * rot);
+    }
+  }
+  if (isEnd) {
+    zrot = 0;
+    xrot = 0;
+  }
+  pose.set("chest", [0, 0, zrot]);
+  pose.set("head", [xrot, 0, zrot * 4]);
+
+  for (const [key, value] of pose) {
+    const bone = currentVrm?.humanoid?.getNormalizedBone(
+      key as VRMHumanBoneName
+    );
+    if (!bone) {
+      continue;
+    }
+    bone.node?.rotation?.set(...value);
+  }
+
   const section = searchSection(playheadTicks);
-  lastLip = phonemeToExpression.get(section.phonemeString) || lastLip;
+  const lip = section.expression;
   {
-    document.body.dataset["xLip"] = `, ${lastLip}, ${lastBpm}`;
+    document.body.dataset["xLip"] = `, ${lip}, ${lastBpm}`;
   }
 
-  if (clock) {
-    const deltaTime = clock.getDelta();
-
-    const ang =
-      ((((Date.now() + offsetX) % 2000) as number) / 2000.0) * Math.PI * 2;
-
-    const weights = makeWeight(lastLip);
-    //weights.set("", 0);
-    weights.set("Hauu", Math.round((Math.cos(ang) + 1) * 0.5));
-    for (const [key, value] of weights) {
-      currentVrm?.expressionManager?.setValue(key, value);
-    }
-
-    let mod = 0;
-    if (Number.isFinite(playheadTicks)) {
-      // 実時間ではなく小節数スケールで進む
-      //pose.set("rightLowerArm", [0, 0, (playheadTicks / lastTpqn) * 2 * Math.PI * 0.25]);
-      mod = (playheadTicks % (lastTpqn * 4)) / (lastTpqn * 4);
-    }
-    const pose = new Map<string, [number, number, number]>([
-      ["leftUpperArm", [0, 0, -degToRad(50)]],
-      ["leftLowerArm", [degToRad(30), -degToRad(140), 0]],
-      ["leftHand", [0, -degToRad(10), degToRad(12)]],
-      ["rightUpperArm", [0, 0, degToRad(50)]],
-      ["rightLowerArm", [degToRad(30), degToRad(140), 0]],
-      ["rightHand", [0, degToRad(10), -degToRad(12)]],
-      ["chest", [0, 0, Math.PI * 0.01 * ease(mod)]],
-      ["head", [0, 0, Math.PI * 0.04 * ease(mod)]],
-    ]);
-    for (const [key, value] of pose) {
-      const bone = currentVrm?.humanoid?.getNormalizedBone(key);
-      if (!bone) {
-        continue;
-      }
-      bone.node?.rotation?.set(...value);
-    }
-    currentVrm?.update(deltaTime);
+  const weights = makeWeight(isEnd ? EXP_CLOSE : lip);
+  weights.set("Hauu", Math.round((Math.cos(ang) + 1) * 0.5));
+  for (const [key, value] of weights) {
+    currentVrm?.expressionManager?.setValue(key, value);
   }
+
+  currentVrm?.update(deltaTime);
 
   renderer.render(scene, camera);
 };
@@ -385,7 +469,14 @@ watch(
 
 let isInstantiated = false;
 
-const cosEase = (_this: any, t: number) => {
+type TwoPoint = {
+  readonly x0: number;
+  readonly y0: number;
+  readonly x1: number;
+  readonly y1: number;
+};
+
+const cosEase = (_this: TwoPoint, t: number) => {
   return (
     _this.y0 +
     (1 - Math.cos((Math.PI * (t - _this.x0)) / (_this.x1 - _this.x0))) *
@@ -513,7 +604,7 @@ const cleanUp = () => {
     window.cancelAnimationFrame(requestId);
   }
   scene?.clear();
-  pitchLinesMap.clear();
+  frameMap.clear();
   renderer?.dispose();
   resizeObserver?.disconnect();
 
