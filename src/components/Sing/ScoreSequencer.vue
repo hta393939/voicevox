@@ -28,6 +28,7 @@
       @wheel="onWheel"
       @scroll="onScroll"
     >
+      <FramePage />
       <!-- キャラクター全身 -->
       <CharacterPortrait />
       <!-- グリッド -->
@@ -250,6 +251,7 @@ import SequencerNote from "@/components/Sing/SequencerNote.vue";
 import SequencerPhraseIndicator from "@/components/Sing/SequencerPhraseIndicator.vue";
 import CharacterPortrait from "@/components/Sing/CharacterPortrait.vue";
 import CharacterModel from "@/components/Sing/CharacterModel.vue";
+import FramePage from "@/components/Sing/FramePage.vue";
 import SequencerPitch from "@/components/Sing/SequencerPitch.vue";
 import { isOnCommandOrCtrlKeyDown } from "@/store/utility";
 

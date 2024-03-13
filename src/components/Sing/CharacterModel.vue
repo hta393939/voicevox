@@ -391,10 +391,16 @@ const render = () => {
   const pose = new Map<string, [number, number, number]>([
     ["leftUpperArm", [0, 0, -degToRad(50)]],
     ["leftLowerArm", [degToRad(30), -degToRad(140), 0]],
-    ["leftHand", [0, -degToRad(10 + 3), degToRad(12)]],
+    ["leftHand", [0, -degToRad(10 + 3 * 0), degToRad(12 - 2)]],
+    ["leftFingerProximal", [0, 0, degToRad(8)]],
+    ["leftMiddleProximal", [0, 0, degToRad(8)]],
+    ["leftRingProximal", [0, 0, degToRad(4)]],
     ["rightUpperArm", [0, 0, degToRad(50)]],
     ["rightLowerArm", [degToRad(30), degToRad(140), 0]],
-    ["rightHand", [0, degToRad(10), -degToRad(12)]],
+    ["rightHand", [0, degToRad(10), -degToRad(12 - 2)]],
+    ["rightFingerProximal", [0, 0, -degToRad(8)]],
+    ["rightMiddleProximal", [0, 0, -degToRad(8)]],
+    ["rightRingProximal", [0, 0, -degToRad(4)]],
   ]);
   let zrot = degToRad(1.8 * ease(mod));
   let xrot = degToRad(3 * (1 - Math.sin(degToRad(180 * ((mod * 4) % 1)))));
