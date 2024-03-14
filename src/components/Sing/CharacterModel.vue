@@ -9,7 +9,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 import { VRMHumanBoneName, VRMLoaderPlugin } from "@pixiv/three-vrm";
 import type { VRMCore } from "@pixiv/three-vrm";
 import { useStore } from "@/store";
-import { secondToTick } from "@/sing/domain";
+import { frequencyToNoteNumber, secondToTick } from "@/sing/domain";
 import { FramePhoneme } from "@/openapi";
 
 type Section = {
@@ -21,6 +21,7 @@ type Section = {
   expression: string;
   weight: number;
   readonly phonemeString: string;
+  noteNumber: number;
 };
 
 type OneFrame = {
@@ -92,6 +93,7 @@ const searchSections = (phonemes: FramePhoneme[]) => {
       expression: "",
       weight: 1,
       phonemeString: phoneme.phoneme,
+      noteNumber: 60,
     });
     currentFrame += phoneme.frameLength;
   }
@@ -123,6 +125,7 @@ const searchSection = (headTick: number) => {
     expression: EXP_CLOSE,
     weight: 1,
     phonemeString: "pau",
+    noteNumber: 60,
   };
   for (const oneframe of frameMap.values()) {
     if (headTick < oneframe.startTick || oneframe.endTick < headTick) {
@@ -278,7 +281,7 @@ const render = () => {
     const tpqn = phrase.tpqn;
     lastTpqn = tpqn;
     const startTime = phrase.startTime; // 秒
-    //const f0 = phrase.query.f0; // 配列であって
+    const f0 = phrase.query.f0; // 配列であって
     const phonemes = phrase.query.phonemes;
     const engineId = phrase.singer.engineId;
     // だいたい 24000 / 256
@@ -315,6 +318,10 @@ const render = () => {
     for (let i = 0; i < num; ++i) {
       const section = sections[i];
       const startFrame = section.startFrame;
+      const freq = f0[startFrame];
+      const noteNumber = frequencyToNoteNumber(freq);
+      //console.log("noteNumber", noteNumber);
+      section.noteNumber = noteNumber;
       section.startTick = secondToTick(
         startTime + section.startFrame / frameRate,
         tempos,
@@ -457,7 +464,15 @@ const render = () => {
   const weights = makeWeight(isEnd ? EXP_CLOSE : lip, section.weight);
   // 長いとき Hauu にする
   const len = section.endTick - section.startTick;
-  const hauuWeight = len >= lastTpqn * 2 && lip !== EXP_CLOSE ? 1 : 0;
+  let isHauu = false;
+  if (len > lastTpqn * 1.5 && lip !== EXP_CLOSE) {
+    isHauu = true;
+  }
+  if (len >= lastTpqn * 1 && section.noteNumber >= 68 && lip !== EXP_CLOSE) {
+    // 高いとき Hauu. 先頭が切れるので1にすると1拍の子音は非対象
+    isHauu = true;
+  }
+  const hauuWeight = isHauu ? 1 : 0;
   weights.set("Hauu", hauuWeight);
 
   const endAppend = Math.min(1, (pastTick - lastTpqn * 3) / 24);

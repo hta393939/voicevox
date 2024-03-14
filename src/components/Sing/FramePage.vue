@@ -5,15 +5,29 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { watch, computed } from "vue";
 import { useStore } from "@/store";
 
 const store = useStore();
 const isShowSinger = computed(() => store.state.isShowSinger);
 
+let filePath = "./res/model/index.html";
 const framePath = computed(() => {
-  return "./res/model/index.html?_dc=12345678912";
+  return filePath;
 });
+
+watch(framePath, () => {
+  console.log("framePath", framePath);
+});
+
+const loop = () => {
+  console.log("timeout fire", filePath);
+  filePath = `./res/model/index.html?_dc=${Date.now()}`;
+  setTimeout(() => {
+    loop();
+  }, 3000);
+};
+loop();
 </script>
 
 <style scoped lang="scss">
