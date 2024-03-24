@@ -47,6 +47,9 @@ const queries = computed(() => {
   return phrases.map((value) => value.query);
 });
 
+const highTone = 70; // 高い音をハウするときの高さ下限 68以上
+const highLongRatio = 0.9; // 高い音をハウするときの必要長さを拍の倍数で
+
 const canvasContainer = ref<HTMLElement | null>(null);
 let resizeObserver: ResizeObserver | undefined;
 let canvasWidth: number | undefined;
@@ -342,7 +345,11 @@ const render = () => {
         case "m":
         case "b":
         case "p":
+        case "my":
+        case "by":
+        case "py":
         case "N":
+        case "v":
         case "pau":
           exp = EXP_CLOSE;
           break;
@@ -408,6 +415,7 @@ const render = () => {
     ["rightFingerProximal", [0, 0, -degToRad(8)]],
     ["rightMiddleProximal", [0, 0, -degToRad(8)]],
     ["rightRingProximal", [0, 0, -degToRad(4)]],
+    ["hips", [0, -degToRad(20), 0]],
   ]);
   let zrot = degToRad(1.8 * ease(mod));
   let xrot = degToRad(3 * (1 - Math.sin(degToRad(180 * ((mod * 4) % 1)))));
@@ -468,7 +476,8 @@ const render = () => {
   if (len > lastTpqn * 1.5 && lip !== EXP_CLOSE) {
     isHauu = true;
   }
-  if (len >= lastTpqn * 1 && section.noteNumber >= 68 && lip !== EXP_CLOSE) {
+  if (len >= lastTpqn * highLongRatio
+    && section.noteNumber >= highTone && lip !== EXP_CLOSE) {
     // 高いとき Hauu. 先頭が切れるので1にすると1拍の子音は非対象
     isHauu = true;
   }
