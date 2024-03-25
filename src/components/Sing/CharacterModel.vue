@@ -188,91 +188,6 @@ const render = () => {
       lastEndTick = Math.max(lastEndTick, oneframe.endTick);
     }
   }
-  // ピッチラインの生成・更新を行う export type Phrase は type.ts にある
-  /*
-  for (const [phraseKey, phrase] of phrases) {
-    if (!phrase.singer || !phrase.query || !phrase.startTime) {
-      continue;
-    }
-
-    const tempos = [toRaw(phrase.tempos[0])];
-    lastBpm = tempos[0].bpm;
-    const tpqn = phrase.tpqn;
-    lastTpqn = tpqn;
-    const startTime = phrase.startTime; // 秒
-    //const f0 = phrase.query.f0; // 配列であって
-    const phonemes = phrase.query.phonemes;
-    const engineId = phrase.singer.engineId;
-    // だいたい 24000 / 256
-    const frameRate = store.state.engineManifests[engineId].frameRate;
-    lastFrameRate = frameRate;
-    let pitchLines = pitchLinesMap.get(phraseKey);
-    lastPhraseKey = phraseKey;
-    document.body.dataset["xPhraseKey"] = phraseKey;
-
-    // フレーズに対応するピッチラインが無かったら生成する
-    if (!pitchLines) {
-      // 区間を調べる
-      const sections = searchSections(phonemes);
-      // 有声区間のピッチラインを生成
-      pitchLines = [];
-      let s = "" + frameRate;
-      for (const section of sections) {
-        const startFrame = section.startFrame;
-        const frameLength = section.frameLength;
-        // 各フレームのticksは前もって計算しておく [s0 1 2 3]
-        const frameTicksArray: number[] = [];
-        for (let j = 0; j < frameLength; j++) {
-          const ticks = secondToTick(
-            startTime + (startFrame + j) / frameRate, // 秒単位
-            tempos,
-            tpqn
-          );
-          frameTicksArray.push(ticks);
-        }
-        pitchLines.push({
-          startFrame,
-          frameLength,
-          frameTicksArray,
-        });
-        lastLip = phonemeToExpression.get(section.phonemeString) || lastLip;
-        //lastPhonemeString = section.phonemeString || lastPhonemeString;
-        s += `, {${section.phonemeString}, ${startFrame}, ${frameLength}}`;
-      }
-      // lineStripをステージに追加
-      pitchLinesMap.set(phraseKey, pitchLines);
-
-      {
-        document.body.dataset["xPhoneme"] = s;
-        //if (s.length > 0) console.log(s);
-      }
-    }
-
-    // ピッチラインを更新
-    for (let i = 0; i < pitchLines.length; i++) {
-      const pitchLine = pitchLines[i];
-
-      // カリングを行う
-      const startTicks = pitchLine.frameTicksArray[0];
-      const startBaseX = tickToBaseX(startTicks, tpqn);
-      const startX = startBaseX * zoomX - offsetX;
-      const lastIndex = pitchLine.frameLength - 1;
-      const endTicks = pitchLine.frameTicksArray[lastIndex];
-      const endBaseX = tickToBaseX(endTicks, tpqn);
-      const endX = endBaseX * zoomX - offsetX;
-
-      // ポイントを計算してlineStripに設定＆更新
-      for (let j = 0; j < pitchLine.frameLength; j++) {
-        const ticks = pitchLine.frameTicksArray[j];
-        const baseX = tickToBaseX(ticks, tpqn);
-        const x = baseX * zoomX - offsetX;
-        const freq = f0[pitchLine.startFrame + j];
-        const noteNumber = frequencyToNoteNumber(freq);
-        const baseY = noteNumberToBaseY(noteNumber);
-        const y = baseY * zoomY - offsetY;
-      }
-    }
-  } */
 
   // phoneme, expression の生成・更新を行う export type Phrase は type.ts にある
   for (const [phraseKey, phrase] of phrases) {
@@ -476,8 +391,11 @@ const render = () => {
   if (len > lastTpqn * 1.5 && lip !== EXP_CLOSE) {
     isHauu = true;
   }
-  if (len >= lastTpqn * highLongRatio
-    && section.noteNumber >= highTone && lip !== EXP_CLOSE) {
+  if (
+    len >= lastTpqn * highLongRatio &&
+    section.noteNumber >= highTone &&
+    lip !== EXP_CLOSE
+  ) {
     // 高いとき Hauu. 先頭が切れるので1にすると1拍の子音は非対象
     isHauu = true;
   }
