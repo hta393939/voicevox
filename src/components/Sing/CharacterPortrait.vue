@@ -49,7 +49,7 @@ const portraitPath = computed(() => {
 }
 
 .character-portrait {
-  width: 1%;
+  width: 100%;
   height: auto;
   backface-visibility: hidden;
 }

@@ -47,8 +47,48 @@ const queries = computed(() => {
   return phrases.map((value) => value.query);
 });
 
-const highTone = 70; // 高い音をハウするときの高さ下限 68以上
-const highLongRatio = 0.9; // 高い音をハウするときの必要長さを拍の倍数で
+const config = {
+  //model: "Zundamon(Human)_VRM_10.vrm"
+  //"model": "ずんだもん.vrm",
+  "model": "Noほうれい線.vrm",
+  //"model": "雨晴はう.vrm",
+  "isZero": true,
+  "dir": {
+    //"y": -20 // Zundamon 用
+    "y": -10 // はう、ずんだ
+  },
+  "isElbow": false,
+  "camera": {
+    //"position": [0, 1.15, 0.5], // Zundamon 用
+    "position": [0, 1.1, 0.9] // ずんだ
+    //"position": [0, 1.3, 0.8], // はう用
+  },
+  "motion": {
+    "long": {
+      "enable": true,
+      "ratio": 1.5,
+      "expression": "blink"
+      //"expression": "Hauu" // Zunda
+    },
+    "high": {
+      "enable": false,
+      "tone": 70, // 68とか70
+      "ratio": 0.9
+    },
+    "last": {
+      //"expression": "Wink_L" // Zunda
+      //"expression": "blinkLeft" // はうにLeftは無影響
+      "expression": "happy" // ずんだ
+    }
+  }
+};
+/*
+try {
+  const configText = await fetch("./res/model/config.json");
+  config = JSON.parse(configText);
+} catch(e) {
+  // 何もしない
+} */
 
 const canvasContainer = ref<HTMLElement | null>(null);
 let resizeObserver: ResizeObserver | undefined;
@@ -76,6 +116,14 @@ const vowelMap = new Map<string, string>([
   ["e", "ee"],
   ["o", "oh"],
 ]);
+
+// vrm0.0 のときはオイラー回転を変換する
+const _conv = (x: number, y: number, z: number) => {
+  if (!config.isZero) {
+    return [x, y, z];
+  }
+  return [-x, y, -z];
+};
 
 const frameMap = new Map<string, OneFrame>();
 
@@ -319,19 +367,21 @@ const render = () => {
   }
   const pose = new Map<string, [number, number, number]>([
     ["leftUpperArm", [0, 0, -degToRad(50)]],
-    ["leftLowerArm", [degToRad(30), -degToRad(140), 0]],
     ["leftHand", [0, -degToRad(10 + 3 * 0), degToRad(12 - 2)]],
     ["leftFingerProximal", [0, 0, degToRad(8)]],
     ["leftMiddleProximal", [0, 0, degToRad(8)]],
     ["leftRingProximal", [0, 0, degToRad(4)]],
     ["rightUpperArm", [0, 0, degToRad(50)]],
-    ["rightLowerArm", [degToRad(30), degToRad(140), 0]],
     ["rightHand", [0, degToRad(10), -degToRad(12 - 2)]],
     ["rightFingerProximal", [0, 0, -degToRad(8)]],
     ["rightMiddleProximal", [0, 0, -degToRad(8)]],
     ["rightRingProximal", [0, 0, -degToRad(4)]],
-    ["hips", [0, -degToRad(20), 0]],
   ]);
+  if (config.isElbow) {
+    pose.set("rightLowerArm", [degToRad(30), degToRad(140), 0]);
+    pose.set("leftLowerArm", [degToRad(30), -degToRad(140), 0]);
+  }
+  pose.set("hips", [0, degToRad(config.dir.y + (config.isZero ? 180 : 0)), 0]);
   let zrot = degToRad(1.8 * ease(mod));
   let xrot = degToRad(3 * (1 - Math.sin(degToRad(180 * ((mod * 4) % 1)))));
 
@@ -385,30 +435,46 @@ const render = () => {
   }
 
   const weights = makeWeight(isEnd ? EXP_CLOSE : lip, section.weight);
-  // 長いとき Hauu にする
   const len = section.endTick - section.startTick;
   let isHauu = false;
-  if (len > lastTpqn * 1.5 && lip !== EXP_CLOSE) {
-    isHauu = true;
+  // 高い音
+  if (config.motion.high.enable) {
+    if (
+      len >= lastTpqn * config.motion.high.ratio &&
+      section.noteNumber >= config.motion.high.tone &&
+      lip !== EXP_CLOSE
+    ) {
+      // 高いとき Hauu. 先頭が切れるので1にすると1拍の子音は非対象
+      isHauu = true;
+    }
   }
-  if (
-    len >= lastTpqn * highLongRatio &&
-    section.noteNumber >= highTone &&
-    lip !== EXP_CLOSE
-  ) {
-    // 高いとき Hauu. 先頭が切れるので1にすると1拍の子音は非対象
-    isHauu = true;
+  // 長い音
+  if (config.motion.long.enable) {
+    if (len > lastTpqn * config.motion.long.ratio && lip !== EXP_CLOSE) {
+      isHauu = true;
+    }
   }
   const hauuWeight = isHauu ? 1 : 0;
-  weights.set("Hauu", hauuWeight);
+  weights.set(config.motion.long.expression, hauuWeight);
 
+  // 最後にウインクなどする場合
   const endAppend = Math.min(1, (pastTick - lastTpqn * 3) / 24);
-  weights.set("Wink_L", endAppend);
+  weights.set(config.motion.last.expression, endAppend);
+  // 首かしげ
   if (endAppend > 0) {
-    pose.set("head", [0, 0, -degToRad(5 * endAppend)]);
+    pose.set("head", [0, 0, degToRad(-5 * endAppend)]);
   }
 
-  // 反映
+  // 表情の反映
+  let isNeutral = true;
+  for (const [key, value] of weights) {
+    if (value > 0) {
+      isNeutral = false;
+    }
+  }
+  if (isNeutral) {
+    weights.set("neutral", 1);
+  }
   for (const [key, value] of weights) {
     currentVrm?.expressionManager?.setValue(key, value);
   }
@@ -419,7 +485,8 @@ const render = () => {
     if (!bone) {
       continue;
     }
-    bone.node?.rotation?.set(...value);
+    const converted = _conv(...value);
+    bone.node?.rotation?.set(converted[0], converted[1], converted[2]);
   }
   // 揺れものの計算
   currentVrm?.update(deltaTime);
@@ -497,9 +564,9 @@ const initialize = () => {
 
   function setCamera(width: number, height: number) {
     camera = new THREE.PerspectiveCamera(45, width / height, 0.02, 100);
-    const lookHeight = 1.15;
-    camera.position.set(0, lookHeight, 0.5);
-    camera.lookAt(new THREE.Vector3(0, lookHeight, 0));
+    const pos = config.camera.position;
+    camera.position.set(pos[0], pos[1], pos[2]);
+    camera.lookAt(new THREE.Vector3(0, pos[1], 0));
     const portWidth = width * 0.6;
     const portHeight = height * 0.6;
     renderer?.setViewport(width - portWidth, 0, portWidth, portHeight); // height は下から
@@ -546,7 +613,7 @@ const initialize = () => {
       return new VRMLoaderPlugin(parser);
     });
     loader.load(
-      "./res/model/Zundamon(Human)_VRM_10.vrm",
+      `./res/model/${config.model}`,
       (gltf) => {
         const vrm = gltf.userData.vrm;
         scene?.add(vrm.scene);

@@ -20,14 +20,16 @@ watch(framePath, () => {
   console.log("framePath", framePath);
 });
 
+/*
 const loop = () => {
-  console.log("timeout fire", filePath);
+  //console.log("timeout fire", filePath);
   filePath = `./res/model/index.html?_dc=${Date.now()}`;
   setTimeout(() => {
     loop();
   }, 3000);
 };
 loop();
+*/
 </script>
 
 <style scoped lang="scss">

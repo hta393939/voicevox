@@ -32,7 +32,7 @@
     >
       <FramePage />
       <!-- キャラクター全身 -->
-      <CharacterPortrait />
+
       <!-- グリッド -->
       <!-- NOTE: 現状オクターブごとの罫線なし -->
       <svg
@@ -134,7 +134,7 @@
     </div>
     <CharacterModel
       v-if="showPitch"
-      class="sequencer-pitch"
+      class="character-model"
       :style="{
         marginRight: `${scrollBarWidth}px`,
         marginBottom: `${scrollBarWidth}px`,
@@ -267,7 +267,7 @@ import SequencerRuler from "@/components/Sing/SequencerRuler.vue";
 import SequencerKeys from "@/components/Sing/SequencerKeys.vue";
 import SequencerNote from "@/components/Sing/SequencerNote.vue";
 import SequencerPhraseIndicator from "@/components/Sing/SequencerPhraseIndicator.vue";
-import CharacterPortrait from "@/components/Sing/CharacterPortrait.vue";
+//import CharacterPortrait from "@/components/Sing/CharacterPortrait.vue";
 import CharacterModel from "@/components/Sing/CharacterModel.vue";
 import FramePage from "@/components/Sing/FramePage.vue";
 import SequencerPitch from "@/components/Sing/SequencerPitch.vue";
@@ -1407,6 +1407,11 @@ const contextMenuData = ref<ContextMenuItemData[]>([
 }
 
 .sequencer-pitch {
+  grid-row: 2;
+  grid-column: 2;
+}
+
+.character-model {
   grid-row: 2;
   grid-column: 2;
 }
