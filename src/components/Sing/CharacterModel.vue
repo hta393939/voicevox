@@ -47,40 +47,42 @@ const queries = computed(() => {
   return phrases.map((value) => value.query);
 });
 
+/**
+ * 送信先
+ */
+let ws: WebSocket | null = null; // 送信先
+
 const config = {
-  //model: "Zundamon(Human)_VRM_10.vrm"
+  model: "Zundamon(Human)_VRM_10.vrm",
   //"model": "ずんだもん.vrm",
-  "model": "Noほうれい線.vrm",
-  //"model": "雨晴はう.vrm",
-  "isZero": true,
-  "dir": {
-    //"y": -20 // Zundamon 用
-    "y": -10 // はう、ずんだ
+  //"model": "Noほうれい線.vrm",
+  isZero: false,
+  dir: {
+    y: -20, // Zundamon 用
+    //"y": -10 // ずんだ
   },
-  "isElbow": false,
-  "camera": {
-    //"position": [0, 1.15, 0.5], // Zundamon 用
-    "position": [0, 1.1, 0.9] // ずんだ
-    //"position": [0, 1.3, 0.8], // はう用
+  isElbow: false,
+  camera: {
+    position: [0, 1.15, 0.5], // Zundamon 用
+    //"position": [0, 1.1, 0.9] // ずんだ
   },
-  "motion": {
-    "long": {
-      "enable": true,
-      "ratio": 1.5,
-      "expression": "blink"
-      //"expression": "Hauu" // Zunda
+  motion: {
+    long: {
+      enable: true,
+      ratio: 1.5,
+      //"expression": "blink"
+      expression: "Hauu", // Zunda
     },
-    "high": {
-      "enable": false,
-      "tone": 70, // 68とか70
-      "ratio": 0.9
+    high: {
+      enable: false,
+      tone: 70, // 68とか70
+      ratio: 0.9,
     },
-    "last": {
-      //"expression": "Wink_L" // Zunda
-      //"expression": "blinkLeft" // はうにLeftは無影響
-      "expression": "happy" // ずんだ
-    }
-  }
+    last: {
+      expression: "Wink_L", // Zunda
+      //"expression": "happy" // ずんだ
+    },
+  },
 };
 /*
 try {
@@ -220,6 +222,7 @@ const render = () => {
   }
   // フレーズ配列
   const phrases = toRaw(store.state.phrases);
+  // 再生位置 チック単位
   const playheadTicks = props.playheadTicks;
 
   // 無くなったフレーズを調べて、そのフレーズに対応する値を削除する。phraseKey は uuidv4 みたいなもの
@@ -492,6 +495,25 @@ const render = () => {
   currentVrm?.update(deltaTime);
 
   renderer.render(scene, camera);
+
+  if (ws?.readyState === WebSocket.OPEN) {
+    const obj = {
+      type: "motion",
+      ts: playheadTicks,
+      e: {} as any,
+      b: {} as any,
+    };
+    {
+      for (const [key, value] of weights) {
+        obj.e[key] = value;
+      }
+      for (const [key, value] of pose) {
+        const converted = _conv(...value);
+        obj.b[key] = [...converted];
+      }
+    }
+    ws.send(JSON.stringify(obj));
+  }
 };
 
 watch(queries, () => {
@@ -538,6 +560,23 @@ function ease(t: number) {
   }
   return 1;
 }
+
+const initWS = () => {
+  ws = new WebSocket("ws://127.0.0.1:40080/out1234");
+  ws.onopen = () => {
+    console.log("onopen fire");
+  };
+  ws.onerror = () => {
+    console.log("onerror fire");
+  };
+  ws.onclose = () => {
+    console.log("onclose fire");
+    ws = null;
+  };
+  ws.onmessage = (ev) => {
+    console.log("onmessage", ev.data);
+  };
+};
 
 const initialize = () => {
   const canvasContainerElement = canvasContainer.value;
@@ -635,6 +674,10 @@ const initialize = () => {
   }
 
   isInstantiated = true;
+
+  if (!ws) {
+    initWS();
+  }
 };
 
 const cleanUp = () => {
