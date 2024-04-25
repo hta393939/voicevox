@@ -371,12 +371,12 @@ const render = () => {
   const pose = new Map<string, [number, number, number]>([
     ["leftUpperArm", [0, 0, -degToRad(50)]],
     ["leftHand", [0, -degToRad(10 + 3 * 0), degToRad(12 - 2)]],
-    ["leftFingerProximal", [0, 0, degToRad(8)]],
+    ["leftIndexProximal", [0, 0, degToRad(8)]],
     ["leftMiddleProximal", [0, 0, degToRad(8)]],
     ["leftRingProximal", [0, 0, degToRad(4)]],
     ["rightUpperArm", [0, 0, degToRad(50)]],
     ["rightHand", [0, degToRad(10), -degToRad(12 - 2)]],
-    ["rightFingerProximal", [0, 0, -degToRad(8)]],
+    ["rightIndexProximal", [0, 0, -degToRad(8)]],
     ["rightMiddleProximal", [0, 0, -degToRad(8)]],
     ["rightRingProximal", [0, 0, -degToRad(4)]],
   ]);
@@ -499,7 +499,8 @@ const render = () => {
   if (ws?.readyState === WebSocket.OPEN) {
     const obj = {
       type: "motion",
-      ts: playheadTicks,
+      //ts: playheadTicks,
+      ts100: Math.round(playheadTicks * 100),
       e: {} as any,
       b: {} as any,
     };
@@ -574,7 +575,7 @@ const initWS = () => {
     ws = null;
   };
   ws.onmessage = (ev) => {
-    console.log("onmessage", ev.data);
+    //console.log("onmessage", ev.data);
   };
 };
 
