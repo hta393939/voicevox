@@ -240,7 +240,7 @@ const render = () => {
     }
   }
 
-  // phoneme, expression の生成・更新を行う export type Phrase は type.ts にある
+  // phoneme, expression の生成・更新を行う export type Phrase は src/store/type.ts にある
   for (const [phraseKey, phrase] of phrases) {
     if (!phrase.singer || !phrase.query || !phrase.startTime) {
       continue;

@@ -145,13 +145,11 @@
       />
     </div>
     <CharacterModel
-      v-if="showPitch"
       class="character-model"
       :style="{
         marginRight: `${scrollBarWidth}px`,
         marginBottom: `${scrollBarWidth}px`,
       }"
-      :is-activated="isActivated"
       :playhead-ticks="playheadTicks"
       :offset-x="0"
     />
@@ -162,7 +160,6 @@
         marginRight: `${scrollBarWidth}px`,
         marginBottom: `${scrollBarWidth}px`,
       }"
-      :is-activated="isActivated"
       :playhead-ticks="playheadTicks"
       :offset-x="scrollX"
       :offset-y="scrollY"
